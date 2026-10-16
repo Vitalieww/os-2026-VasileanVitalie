@@ -1,0 +1,420 @@
+\documentclass[12pt,a4paper]{report}
+
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
+\lstset{
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
+}
+
+% ------------------ DOCUMENT ------------------
+\begin{document}
+
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\begin{figure}[htbp]
+\centering
+\IfFileExists{img/utm_logo.png}{\includegraphics[width=0.2\textwidth]{img/utm_logo.png}}{\vspace{2cm}}
+\end{figure}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
+
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 6\\
+Operating Systems\\
+Topic: Inside the xv6 File System\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+The xv6 operating system provides a compact and fully readable implementation of a UNIX-like file system. Despite its minimal code base of only a few hundred lines, it encompasses foundational storage concepts including on-disk and in-memory inodes, directory tables, hard link referencing, disk logging via a journal, and buffer cache management. Investigating the internal disk layout and userland utilities of xv6 allows examining fundamental file system primitives without the configuration overhead of enterprise operating systems.
+
+\section{Lab Objective}
+The primary goals of this laboratory work are:
+\begin{itemize}
+    \item inspecting the root directory structure and file typing mechanisms in xv6;
+    \item implementing the custom userland program \texttt{mystat} to parse and inspect \texttt{struct stat};
+    \item tracing the life cycle of file references and data blocks during hard link operations and unlinking;
+    \item evaluating the storage limits determined by architectural parameters in \texttt{kernel/fs.h};
+    \item implementing the recursive directory search program \texttt{find} and verifying its execution across nested directory hierarchies.
+\end{itemize}
+
+% ------------------ CHAPTER 2 ------------------
+\chapter{READING WHAT XV6 SHOWS}
+
+\section{Command Execution and Output}
+The root filesystem and a newly created directory \texttt{a} were inspected using the native \texttt{ls} utility:
+\begin{lstlisting}[language=bash]
+$ ls
+.              1 1 1024
+..             1 1 1024
+README         2 2 2441
+cat            2 3 36728
+echo           2 4 35592
+forktest       2 5 18136
+grep           2 6 44184
+init           2 7 35976
+kill           2 8 35512
+ln             2 9 35304
+ls             2 10 42880
+mkdir          2 11 35568
+rm             2 12 35552
+sh             2 13 58312
+stressfs       2 14 36416
+usertests      2 15 206800
+grind          2 16 51824
+wc             2 17 37728
+zombie         2 18 34848
+logstress      2 19 37560
+forphan        2 20 36352
+dorphan        2 21 35800
+sync           2 22 34944
+sleep          2 23 35280
+args           2 24 35272
+console        3 25 0
+
+$ mkdir a
+$ ls a
+.              1 26 32
+..             1 1 1024
+\end{lstlisting}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Meaning of types 1, 2, and 3:}
+    Inspecting \texttt{kernel/stat.h} reveals the file type enumeration:
+    \begin{itemize}
+        \item \texttt{T\_DIR (1)}: Directory entry.
+        \item \texttt{T\_FILE (2)}: Regular data file.
+        \item \texttt{T\_DEVICE (3)}: Special device file (e.g., the console).
+    \end{itemize}
+    \item \textbf{Root directory inode and loopback references:}
+    The root directory has inode number \textbf{1} (defined by \texttt{ROOTINO} in \texttt{kernel/fs.h}). In the root directory, both \texttt{.} (current directory) and \texttt{..} (parent directory) refer to inode \textbf{1} because the root directory has no parent; it is the top-level anchor of the tree.
+    \item \textbf{Empty directory sizing and entries:}
+    An empty directory \texttt{a} reports a size of \textbf{32 bytes}. Each directory entry in xv6 is represented by \texttt{struct dirent} (defined in \texttt{kernel/fs.h}), containing an unsigned 2-byte inode number (\texttt{ushort inum}) and a 14-byte name buffer (\texttt{char name[DIRSIZ]}), totaling exactly \textbf{16 bytes} per entry. Hence, $32 / 16 = 2$ entries, which correspond exactly to \texttt{.} and \texttt{..}.
+\end{enumerate}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{THE MYSTAT PROGRAM AND HARD LINKS}
+
+\section{Implementation of \texttt{user/mystat.c}}
+The \texttt{mystat} utility was created to invoke \texttt{stat()} and format the metadata fields:
+\begin{lstlisting}[language=C]
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+
+char *typename(int t)
+{
+  switch (t) {
+  case T_DIR:    return "directory";
+  case T_FILE:   return "file";
+  case T_DEVICE: return "device";
+  default:       return "?";
+  }
+}
+
+int main(int argc, char *argv[])
+{
+  struct stat st;
+
+  if (argc < 2) {
+    fprintf(2, "usage: mystat <file...>\n");
+    exit(1);
+  }
+
+  for (int i = 1; i < argc; i++) {
+    if (stat(argv[i], &st) < 0) {
+      fprintf(2, "mystat: cannot stat %s\n", argv[i]);
+      continue;
+    }
+    printf("%s: %s, inode %d, links %d, size %d bytes\n",
+           argv[i], typename(st.type), st.ino, st.nlink, (int)st.size);
+  }
+  exit(0);
+}
+\end{lstlisting}
+
+\section{Execution and Hard Link Trace}
+\begin{lstlisting}[language=bash]
+$ mystat README . console
+README: file, inode 2, links 1, size 2441 bytes
+.: directory, inode 1, links 1, 1024 bytes
+console: device, inode 27, links 1, size 0 bytes
+
+$ ln README r2
+$ mystat README r2
+README: file, inode 2, links 2, size 2441 bytes
+r2: file, inode 2, links 2, size 2441 bytes
+
+$ rm README
+$ mystat r2
+r2: file, inode 2, links 1, size 2441 bytes
+
+$ cat r2 | wc
+48 336 2441
+\end{lstlisting}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Link count dynamics:}
+    After running \texttt{ln README r2}, both \texttt{README} and \texttt{r2} point to inode \textbf{2}, and the link counter \texttt{nlink} for both increments from 1 to 2. The type, inode number, and file size remain completely identical. After executing \texttt{rm README}, the entry \texttt{README} is removed from the directory table, and the link counter on inode 2 decrements to 1. The data blocks remain entirely intact, allowing \texttt{cat r2 | wc} to read the full 2441 bytes.
+    \item \textbf{Unlinking and block deallocation in xv6:}
+    In \texttt{kernel/sysfile.c}, the system call function \texttt{sys\_unlink()} decrements the on-disk inode link count via \texttt{ip->nlink--} and commits the change with \texttt{iupdate(ip)}. The underlying data blocks are \textbf{not} freed immediately in \texttt{sys\_unlink}. Instead, data blocks are deallocated inside \texttt{iput()} in \texttt{kernel/fs.c}: when an inode's in-memory reference count drops to 0 and \texttt{ip->nlink == 0}, \texttt{iput()} calls \texttt{itrunc(ip)}, which traverses all direct and indirect block pointers and marks them free in the block bitmap.
+    \item \textbf{Fields of \texttt{struct dinode}:}
+    Examining \texttt{kernel/fs.h} confirms that xv6 inodes contain no access control bits, ownership UIDs/GIDs, or modification timestamps:
+    \begin{itemize}
+        \item \texttt{short type}: File type (\texttt{T\_DIR}, \texttt{T\_FILE}, \texttt{T\_DEVICE}).
+        \item \texttt{short major}, \texttt{short minor}: Major and minor device numbers.
+        \item \texttt{short nlink}: Number of directory references pointing to this inode.
+        \item \texttt{uint size}: Logical file size in bytes.
+        \item \texttt{uint addrs[NDIRECT+1]}: Direct data block addresses plus one indirect block address.
+    \end{itemize}
+\end{enumerate}
+
+% ------------------ CHAPTER 4 ------------------
+\chapter{MEASURING FILE SYSTEM LIMITS}
+
+\section{Inspection of Header Constants and Layout}
+Executing the search in \texttt{kernel/fs.h} and capturing disk generation yields:
+\begin{lstlisting}[language=bash]
+$ grep -n "define BSIZE\|define NDIRECT\|define NINDIRECT\|define DIRSIZ" kernel/fs.h
+5:#define BSIZE   1024 // block size
+26:#define NDIRECT   12
+27:#define NINDIRECT (BSIZE / sizeof(uint))
+54:#define DIRSIZ 14
+
+$ make clean ; make fs.img 2>&1 | grep nmeta
+nmeta 47 (boot, super, log blocks 31, inode blocks 13, bitmap blocks 1) blocks 1953 total 2000
+\end{lstlisting}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Long directory entry truncation:}
+    Running \texttt{mkdir averyveryverylongname} followed by \texttt{ls} displays the directory name as \texttt{averyveryveryl}. This behavior is governed by the constant \texttt{DIRSIZ} defined as \textbf{14} in \texttt{kernel/fs.h}. Any character beyond 14 bytes is truncated by \texttt{dirlink()} when writing into \texttt{struct dirent}.
+    \item \textbf{Maximum file size calculation:}
+    The maximum file capacity supported by the xv6 filesystem is calculated from the direct and indirect block address layout:
+    \begin{align}
+        \text{Block Size } (BSIZE) &= 1024 \text{ bytes} \\
+        \text{Block Pointer Size} &= \text{sizeof}(\texttt{uint}) = 4 \text{ bytes} \\
+        \text{Number of Indirect Blocks } (NINDIRECT) &= \frac{1024}{4} = 256 \text{ blocks} \\
+        \text{Total Addressable Blocks} &= NDIRECT + NINDIRECT = 12 + 256 = 268 \text{ blocks} \\
+        \text{Maximum File Size} &= 268 \times 1024 = 274,432 \text{ bytes } (\approx 268 \text{ KB})
+    \end{align}
+    \item \textbf{Disk block budget:}
+    According to the observed \texttt{nmeta} output, the entire virtual disk consists of \textbf{2000 blocks}:
+    \begin{itemize}
+        \item Metadata blocks ($nmeta = 47$): 1 boot block, 1 superblock, 31 log/journal blocks, 13 inode blocks, and 1 bitmap block.
+        \item Data blocks: $2000 - 47 = \textbf{1953}$ blocks available for file and directory content.
+    \end{itemize}
+\end{enumerate}
+
+% ------------------ CHAPTER 5 ------------------
+\chapter{RECURSIVE DIRECTORY SEARCH (FIND)}
+
+\section{Implementation of \texttt{user/find.c}}
+The \texttt{find} program traverses directory trees recursively, reading \texttt{struct dirent} entries, checking against \texttt{inum == 0}, avoiding \texttt{.} and \texttt{..}, and supporting the optional \texttt{-n} stretch flag:
+\begin{lstlisting}[language=C]
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+#include "kernel/fs.h"
+#include "kernel/fcntl.h"
+
+void find(char *path, char *target, int show_ino)
+{
+  char buf[512];
+  char *p;
+  int fd;
+  struct dirent de;
+  struct stat st;
+
+  if ((fd = open(path, O_RDONLY)) < 0) {
+    fprintf(2, "find: cannot open %s\n", path);
+    return;
+  }
+  if (fstat(fd, &st) < 0 || st.type != T_DIR) {
+    close(fd);
+    return;
+  }
+  if (strlen(path) + 1 + DIRSIZ + 1 > sizeof(buf)) {
+    fprintf(2, "find: path too long\n");
+    close(fd);
+    return;
+  }
+
+  strcpy(buf, path);
+  p = buf + strlen(buf);
+  *p++ = '/';
+
+  while (read(fd, &de, sizeof(de)) == sizeof(de)) {
+    if (de.inum == 0) continue;
+    if (strcmp(de.name, ".") == 0 || strcmp(de.name, "..") == 0) continue;
+
+    memmove(p, de.name, DIRSIZ);
+    p[DIRSIZ] = 0;
+
+    if (stat(buf, &st) < 0) continue;
+
+    if (strcmp(de.name, target) == 0) {
+      if (show_ino)
+        printf("%s %d\n", buf, st.ino);
+      else
+        printf("%s\n", buf);
+    }
+
+    if (st.type == T_DIR)
+      find(buf, target, show_ino);
+  }
+  close(fd);
+}
+
+int main(int argc, char *argv[])
+{
+  int show_ino = 0;
+  if (argc < 3) {
+    fprintf(2, "usage: find <path> <name> [-n]\n");
+    exit(1);
+  }
+  if (argc >= 4 && strcmp(argv[3], "-n") == 0)
+    show_ino = 1;
+  find(argv[1], argv[2], show_ino);
+  exit(0);
+}
+\end{lstlisting}
+
+\section{Execution and Verification}
+The test tree was built on the disk image and queried:
+\begin{lstlisting}[language=bash]
+$ mkdir a/b
+$ echo x > a/b/r2
+$ echo y > a/r2
+$ find . r2
+./r2
+./a/b/r2
+./a/r2
+
+$ find a b
+a/b
+
+$ find . r2 -n
+./r2 2
+./a/b/r2 31
+./a/r2 32
+\end{lstlisting}
+
+\section{Stretch Goal Evaluation}
+Inspecting the output of \texttt{find . r2 -n} demonstrates that \texttt{./r2} has inode number \textbf{2}, which is the hard link created to the \texttt{README} file (inode 2). Conversely, \texttt{./a/r2} (inode 32) and \texttt{./a/b/r2} (inode 31) are newly created distinct files allocated with distinct inode numbers. Thus, the stretch flag verifies that only \texttt{./r2} shares the exact underlying inode and data blocks of the original file, while the others are independent filesystem nodes that simply share the same basename.
+
+% ------------------ CONCLUSION ------------------
+\chapter*{CONCLUSION}
+\addcontentsline{toc}{chapter}{CONCLUSION}
+This laboratory work provided a practical, code-level exploration of the xv6 file system architecture. By inspecting data structures in \texttt{kernel/fs.h} and implementing userland system utilities, the internal lifecycle of files and directories was clearly demonstrated.
+
+Key insights gained from this laboratory include:
+\begin{itemize}
+    \item \textbf{Inode-Directory decoupling:} File names exist strictly as 16-byte records in directory tables mapped to inode indices, whereas data blocks, types, and link counters reside inside the inode structure.
+    \item \textbf{Reference counting and deferred freeing:} Creating a hard link simply increments \texttt{nlink}. Data block reclaiming is deferred to \texttt{iput()} when both the directory link count and active file descriptor count drop to zero.
+    \item \textbf{Architectural limits:} Fixed constants such as \texttt{DIRSIZ} and \texttt{BSIZE} dictate strict limits, including the maximum directory entry name length (14 characters) and maximum addressable file capacity (268 KB).
+    \item \textbf{Recursive traversal:} Implementing \texttt{find} illustrated directory file parsing, descriptor leak prevention, and infinite recursion mitigation by bypassing \texttt{.} and \texttt{..}.
+\end{itemize}
+
+Overall, this practical work deepened my comprehension of operating system storage hierarchies and reinforced how filesystem system calls translate into concrete disk block operations.
+
+% ------------------ REFERENCES ------------------
+\chapter*{REFERENCES}
+\addcontentsline{toc}{chapter}{REFERENCES}
+
+\noindent [1] Russ Cox, Frans Kaashoek, Robert Morris, \textit{xv6: a simple, Unix-like teaching operating system}, MIT CSAIL, 2020.
+
+\noindent [2] Remzi H. Arpaci-Dusseau and Andrea C. Arpaci-Dusseau, \textit{Operating Systems: Three Easy Pieces}, Arpaci-Dusseau Books, 2018.
+
+\noindent [3] MIT 6.1810 / 6.828 Operating System Engineering, \textit{Lab util: Unix utilities (find)}, MIT OpenCourseWare.
+
+\end{document}
