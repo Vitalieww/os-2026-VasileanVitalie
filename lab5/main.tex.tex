@@ -1,0 +1,373 @@
+\documentclass[12pt,a4paper]{report}
+
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath} % Times-like font for pdfLaTeX
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
+\lstset{
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
+}
+
+% ------------------ DOCUMENT ------------------
+\begin{document}
+
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\begin{figure}[htbp]
+\centering
+\IfFileExists{img/utm_logo.png}{\includegraphics[width=0.2\textwidth]{img/utm_logo.png}}{\vspace{2cm}}
+\end{figure}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
+
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 5\\
+Operating Systems\\
+Topic: The File System with Your Own Hands (Linux)\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+Operating systems provide high-level abstractions to manage persistent secondary storage, device communication, and running process states. Under the UNIX and Linux design philosophy, these resources are unified under a hierarchical virtual filesystem tree. Rather than interacting directly with block addresses on disk hardware, user applications access files, directories, character interfaces, storage devices, and kernel tables through standardized POSIX system call abstractions.
+
+\section{Lab Objective}
+The primary objective of this laboratory work is to investigate the foundational mechanisms of the Linux filesystem using direct command-line utilities and kernel inspections. The scope covers:
+\begin{itemize}
+    \item the filesystem tree and file type classification from file metadata;
+    \item inode structures, directory entry namespaces, hard links, and symbolic links;
+    \item file size semantics versus allocated physical disk space (sparse files);
+    \item Discretionary Access Control (DAC) permissions, directory traversal rules, umask operations, and special permission bits (Setuid, Sticky bit);
+    \item disk partitioning, mount points, and pseudo-filesystems exposing kernel internal state (\texttt{/proc}).
+\end{itemize}
+
+% ------------------ CHAPTER 2 ------------------
+\chapter{THE TREE AND FILE TYPES}
+
+\section{Command Execution and Raw Output}
+The system directory root and core entry points were inspected using \texttt{ls}, \texttt{file}, and \texttt{du}:
+\begin{lstlisting}[language=bash]
+vitalie@LinuxLabs:~/os-lab5$ ls -ld /etc /etc/passwd /bin /dev/null /tmp
+vitalie@LinuxLabs:~/os-lab5$ du -sh /var/log 2>/dev/null ; du -sh /usr 2>/dev/null
+74M     /var/log
+6.3G    /usr
+\end{lstlisting}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{File types from the initial character of \texttt{ls -ld}:}
+    \begin{itemize}
+        \item \texttt{/etc}: \texttt{d} $\rightarrow$ Directory.
+        \item \texttt{/etc/passwd}: \texttt{-} $\rightarrow$ Regular file.
+        \item \texttt{/bin}: \texttt{l} $\rightarrow$ Symbolic link.
+        \item \texttt{/dev/null}: \texttt{c} $\rightarrow$ Character device.
+        \item \texttt{/tmp}: \texttt{d} $\rightarrow$ Directory with sticky bit protection.
+    \end{itemize}
+    \item \textbf{Nature of \texttt{/bin}:} On modern Linux distributions, \texttt{/bin} is a symbolic link pointing to \texttt{/usr/bin}. This follows the UsrMerge architecture, consolidating all core binaries under \texttt{/usr}.
+    \item \textbf{Device classification in \texttt{/dev}:}
+    \begin{itemize}
+        \item Character device (\texttt{c}): \texttt{/dev/null} processes data as an unbuffered stream of single bytes.
+        \item Block device (\texttt{b}): \texttt{/dev/sda} transfers data through the kernel page cache in fixed-size blocks.
+    \end{itemize}
+    \item \textbf{Disk usage comparison:} \texttt{/usr} occupies \textbf{6.3 GB}, whereas \texttt{/var/log} occupies \textbf{74 MB}. The \texttt{/usr} hierarchy is roughly 85 times larger because it houses core userland programs, shared libraries, and documentation, whereas \texttt{/var/log} only stores rotating system logs.
+\end{enumerate}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{INODES AND LINKS}
+
+\section{Command Execution and Raw Output}
+Hard links, symbolic links, directory structure links, and file allocation properties were evaluated:
+\begin{lstlisting}[language=bash]
+vitalie@LinuxLabs:~/os-lab5$ stat notes.txt
+  File: notes.txt
+  Size: 6             Blocks: 8          IO Block: 4096   regular file
+Device: 8,2    Inode: 1574449     Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1000/ vitalie)   Gid: ( 1000/ vitalie)
+
+vitalie@LinuxLabs:~/os-lab5$ ln notes.txt hard.txt
+vitalie@LinuxLabs:~/os-lab5$ ls -li notes.txt hard.txt
+1574449 -rw-rw-r-- 2 vitalie vitalie 6 Oct 12 12:49 hard.txt
+1574449 -rw-rw-r-- 2 vitalie vitalie 6 Oct 12 12:49 notes.txt
+
+vitalie@LinuxLabs:~/os-lab5$ rm notes.txt
+vitalie@LinuxLabs:~/os-lab5$ cat hard.txt ; ls -li hard.txt
+hello
+1574449 -rw-rw-r-- 1 vitalie vitalie 6 Oct 12 12:49 hard.txt
+
+vitalie@LinuxLabs:~/os-lab5$ ln -s hard.txt soft.txt
+vitalie@LinuxLabs:~/os-lab5$ ls -li hard.txt soft.txt
+1574449 -rw-rw-r-- 1 vitalie vitalie 6 Oct 12 12:49 hard.txt
+1576266 lrwxrwxrwx 1 vitalie vitalie 8 Oct 12 12:49 soft.txt -> hard.txt
+
+vitalie@LinuxLabs:~/os-lab5$ rm hard.txt
+vitalie@LinuxLabs:~/os-lab5$ cat soft.txt ; ls -l soft.txt
+cat: soft.txt: No such file or directory
+lrwxrwxrwx 1 vitalie vitalie 8 Oct 12 12:49 soft.txt -> hard.txt
+
+vitalie@LinuxLabs:~/os-lab5$ mkdir d ; ls -ld d
+drwxrwxr-x 2 vitalie vitalie 4096 Oct 12 12:49 d
+
+vitalie@LinuxLabs:~/os-lab5$ mkdir d/x d/y ; ls -ld d
+drwxrwxr-x 4 vitalie vitalie 4096 Oct 12 12:49 d
+
+vitalie@LinuxLabs:~/os-lab5$ echo x > one.txt ; ls -l one.txt ; du -h one.txt
+-rw-rw-r-- 1 vitalie vitalie 2 Oct 12 12:49 one.txt
+4.0K    one.txt
+
+vitalie@LinuxLabs:~/os-lab5$ truncate -s 1G big.img ; ls -lh big.img ; du -h big.img
+-rw-rw-r-- 1 vitalie vitalie 1.0G Oct 12 12:49 big.img
+0       big.img
+\end{lstlisting}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Inode numbers and link reference counters:} The field \texttt{Inode: 1574449} specifies the unique inode index within filesystem device 8,2. The \texttt{Links: 2} parameter defines how many directory namespace entries point to that inode.
+    \item \textbf{Hard link data persistence:} Creating a hard link introduces a second directory entry sharing the identical inode (\texttt{1574449}). The command \texttt{rm notes.txt} invokes the \texttt{unlink()} system call, decrementing the link count from 2 to 1. Because the link count remains non-zero, the physical data blocks remain intact and accessible via \texttt{hard.txt}.
+    \item \textbf{Symbolic link behavior:} A symlink creates a new inode (\texttt{1576266}) holding the text string path \texttt{"hard.txt"}. When \texttt{hard.txt} is unlinked, reading \texttt{soft.txt} fails with \texttt{No such file or directory} because target path resolution fails. The size of \texttt{soft.txt} is exactly \textbf{8 bytes} because the ASCII string \texttt{"hard.txt"} consists of 8 bytes.
+    \item \textbf{Directory link counting:} A new directory \texttt{d} has \textbf{2 links}: the reference in the parent folder and its self-referential entry \texttt{d/.}. Adding subdirectories \texttt{d/x} and \texttt{d/y} increases the count to \textbf{4} because each subdirectory contains an entry \texttt{..} pointing back to \texttt{d}.
+    \item \textbf{Physical block allocation versus logical size:}
+    \begin{itemize}
+        \item \texttt{one.txt} contains 2 bytes (\texttt{'x'} and \texttt{\textbackslash n}), but the ext4 filesystem allocates disk space in minimum block units of 4096 bytes (4.0 KB).
+        \item \texttt{big.img} is a \textit{sparse file} created via \texttt{truncate}. The kernel stores a logical size of 1.0 GB in the inode metadata without allocating physical disk extents until data is written, resulting in 0 bytes reported by \texttt{du}.
+    \end{itemize}
+\end{enumerate}
+
+% ------------------ CHAPTER 4 ------------------
+\chapter{PERMISSIONS AND SPECIAL BITS}
+
+\section{Command Execution and Raw Output}
+Standard permissions, directory traversal rules, umask calculation, and elevated bits were tested:
+\begin{lstlisting}[language=bash]
+vitalie@LinuxLabs:~/os-lab5$ chmod 000 s.txt ; cat s.txt
+cat: s.txt: Permission denied
+
+vitalie@LinuxLabs:~/os-lab5$ chmod u+r s.txt ; cat s.txt
+secret
+
+vitalie@LinuxLabs:~/os-lab5$ umask ; touch new.txt ; mkdir newdir ; ls -ld new.txt newdir
+0002
+-rw-rw-r-- 1 vitalie vitalie    0 Oct 12 12:49 new.txt
+drwxrwxr-x 2 vitalie vitalie 4096 Oct 12 12:49 newdir
+
+vitalie@LinuxLabs:~/os-lab5$ chmod u=r,go= box ; ls box ; cat box/f
+f
+cat: box/f: Permission denied
+
+vitalie@LinuxLabs:~/os-lab5$ chmod u=x,go= box ; ls box ; cat box/f
+ls: cannot open directory 'box': Permission denied
+hi
+
+vitalie@LinuxLabs:~/os-lab5$ ls -l /usr/bin/passwd ; ls -ld /tmp
+-rwsr-xr-x 1 root root 93640 Feb  2  2026 /usr/bin/passwd
+drwxrwxrwt 15 root root   360 Oct 12 12:46 /tmp
+
+vitalie@LinuxLabs:~/os-lab5$ cat /etc/shadow ; ls -l /etc/shadow
+cat: /etc/shadow: Permission denied
+-rw-r----- 1 root shadow 1335 Oct  5 13:09 /etc/shadow
+\end{lstlisting}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Octal permission representations:}
+    \begin{itemize}
+        \item \texttt{600} (\texttt{rw-------}): Read and write access for owner only. Used for private cryptographic keys (e.g., \texttt{\textasciitilde/.ssh/id\_rsa}).
+        \item \texttt{644} (\texttt{rw-r--r--}): Owner read/write, world readable. Standard for configuration and web documents (e.g., \texttt{/etc/resolv.conf}).
+        \item \texttt{755} (\texttt{rwxr-xr-x}): Full access for owner, read and execute for group/others. Standard for public binaries and system directories (e.g., \texttt{/usr/bin/ls}).
+        \item \texttt{700} (\texttt{rwx------}): Full access restricted strictly to owner. Used for personal directories (e.g., \texttt{\textasciitilde/.ssh}).
+    \end{itemize}
+    \item \textbf{Ownership versus \texttt{chmod 000}:} Linux evaluates permission bits based on the matching credential tier. Since the user is the owner, the user class bits (\texttt{---}) apply directly, denying read access. File ownership grants the right to modify permission attributes via \texttt{chmod}, but does not grant automatic read privileges.
+    \item \textbf{Umask mechanics:} The active umask is \texttt{0002}.
+    \begin{align*}
+        \text{Base File Mode:} \quad & 0666_8 \land \neg(0002_8) = 0664_8 \quad (\texttt{-rw-rw-r--}) \\
+        \text{Base Directory Mode:} \quad & 0777_8 \land \neg(0002_8) = 0775_8 \quad (\texttt{drwxrwxr-x})
+    \end{align*}
+    \item \textbf{Directory permissions (\texttt{r} vs. \texttt{x}):}
+    \begin{itemize}
+        \item Read permission (\texttt{r}) allows reading the directory contents (listing directory entry names with \texttt{ls}). It does not permit resolving inodes or reading file content inside.
+        \item Execute permission (\texttt{x}) allows path traversal and inode resolution. A known filename can be opened and read (\texttt{cat box/f}), but directory listings are forbidden (\texttt{ls box} fails).
+    \end{itemize}
+    \item \textbf{Special permission bits:}
+    \begin{itemize}
+        \item The \texttt{s} bit on \texttt{/usr/bin/passwd} is Setuid. It executes the program with the effective user ID of the file owner (\texttt{root}), allowing an unprivileged user to update their password hash inside \texttt{/etc/shadow}.
+        \item The \texttt{t} bit on \texttt{/tmp} is the Sticky bit. In a world-writable directory, it restricts deletion or renaming of a file strictly to the file owner or root.
+    \end{itemize}
+\end{enumerate}
+
+% ------------------ CHAPTER 5 ------------------
+\chapter{DISKS AND THE KERNEL AS FILES}
+
+\section{Command Execution and Raw Output}
+Storage partitioning, mount tables, and virtual kernel interfaces were inspected:
+\begin{lstlisting}[language=bash]
+vitalie@LinuxLabs:~/os-lab5$ lsblk
+NAME   MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
+sda      8:0    0    42G  0 disk 
++-sda1   8:1    0     1M  0 part 
++-sda2   8:2    0    42G  0 part /
+
+vitalie@LinuxLabs:~/os-lab5$ mount | grep " / "
+/dev/sda2 on / type ext4 (rw,relatime)
+
+vitalie@LinuxLabs:~/os-lab5$ df -hm /
+Filesystem     1M-blocks  Used Available Use% Mounted on
+/dev/sda2          42027  9159     30702  23% /
+
+vitalie@LinuxLabs:~/os-lab5$ grep -c processor /proc/cpuinfo
+4
+
+vitalie@LinuxLabs:~/os-lab5$ head -3 /proc/meminfo
+MemTotal:        3479648 kB
+MemFree:          404992 kB
+MemAvailable:    2035864 kB
+
+vitalie@LinuxLabs:~/os-lab5$ head -5 /proc/self/status
+Name:   head
+Umask:  0002
+State:  R (running)
+\end{lstlisting}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Storage architecture:} The virtual system presents drive \texttt{sda} (42 GB capacity). Partition \texttt{sda2} is mounted at the root directory (\texttt{/}) using the \textbf{ext4} filesystem.
+    \item \textbf{Filesystem capacity:} The root partition is currently \textbf{23\% full}, utilizing 9,159 MB out of 42,027 MB available.
+    \item \textbf{Hardware metrics exposed in \texttt{/proc}:}
+    \begin{itemize}
+        \item Processor cores: \textbf{4 cores}.
+        \item Total system RAM: \textbf{3,479,648 kB} ($\approx 3.4$ GB).
+    \end{itemize}
+    \item \textbf{Behavior of \texttt{/proc/self/status}:} The output displays \texttt{Name: head}. The virtual link \texttt{/proc/self} resolves dynamically to the PID of the calling process accessing the filesystem entry. Because \texttt{head} opened the status file, the kernel reported the metadata belonging to \texttt{head}.
+\end{enumerate}
+
+% ------------------ CHAPTER 6 ------------------
+\chapter{STRETCH GOALS}
+
+\section{Stretch Goal A: Magic Numbers}
+The file signature header of a gzip-compressed archive was examined:
+\begin{lstlisting}[language=bash]
+vitalie@LinuxLabs:~/os-lab5$ gzip -c /etc/passwd > notes.txt ; file notes.txt ; xxd notes.txt | head -1
+notes.txt: gzip compressed data, was "passwd", last modified: Mon Oct  5 13:09:51 2026, from Unix, original size modulo 2^32 2820
+00000000: 1f8b 0808 9fa1 c36a 0003 7061 7373 7764  .......j..passwd
+\end{lstlisting}
+\textbf{Analysis:} The initial two hexadecimal bytes \texttt{1f 8b} represent the magic number identifying gzip streams according to RFC 1952. The \texttt{file} utility inspects these leading bytes against its magic database, allowing accurate file classification regardless of the file extension.
+
+\section{Stretch Goal C: Deletion of an Active Open File}
+The filesystem reaction to unlinking a file with an active descriptor was tested:
+\begin{lstlisting}[language=bash]
+vitalie@LinuxLabs:~/os-lab5$ truncate -s 10M bigfile ; exec 3< bigfile ; rm bigfile ; ls -l /proc/$$/fd ; exec 3<&-
+lr-x------ 1 vitalie vitalie 64 Oct 12 12:49 3 -> '/home/vitalie/os-lab5/bigfile (deleted)'
+\end{lstlisting}
+\textbf{Analysis:} File descriptor 3 retains an open link to the deleted inode. Although \texttt{rm} removed the directory namespace entry, the inode and its allocated space remain reserved until descriptor 3 is closed with \texttt{exec 3<\&-}.
+
+% ------------------ CONCLUSION ------------------
+\chapter*{CONCLUSION}
+\addcontentsline{toc}{chapter}{CONCLUSION}
+This laboratory work provided a direct, practical inspection of the Linux filesystem architecture and its underlying POSIX mechanics. Performing these experiments on a live Linux system demonstrated how userland commands map directly to kernel filesystem abstractions.
+
+The most important insights gained from this laboratory work are:
+\begin{itemize}
+    \item \textbf{Separation of names and data:} Directory entries are merely names mapped to inode pointers; file metadata and data blocks exist independently of the directory entries that reference them.
+    \item \textbf{Link mechanics:} Hard links share identical inode structures directly, while symbolic links are separate files storing destination string paths.
+    \item \textbf{Deferred inode reclamation:} Unlinking a file only removes its directory entry; actual data blocks are only returned to the free list when the link count reaches zero and all processes close open file descriptors.
+    \item \textbf{Permission semantics:} Directory permissions require both read (\texttt{r}) to list file names and execute (\texttt{x}) to traverse into subdirectories and resolve inodes.
+    \item \textbf{Kernel exposure via pseudo-filesystems:} Virtual filesystems such as \texttt{/proc} demonstrate the UNIX concept of presenting live hardware configurations and process states through regular file read operations.
+\end{itemize}
+
+Overall, this practical work bridged theoretical knowledge of filesystem design with actual operating system behavior, reinforcing how file storage, security checks, and process resources are managed by the Linux kernel.
+
+% ------------------ REFERENCES ------------------
+\chapter*{REFERENCES}
+\addcontentsline{toc}{chapter}{REFERENCES}
+
+\noindent [1] Robert Love, \textit{Linux System Programming: Talking Directly to the Kernel and C Library}, O'Reilly Media.
+
+\noindent [2] Michael Kerrisk, \textit{The Linux Programming Interface: A Linux and UNIX System Programming Handbook}, No Starch Press.
+
+\noindent [3] Linux Kernel Documentation, \textit{The /proc Filesystem}, https://docs.kernel.org/filesystems/proc.html
+
+\noindent [4] POSIX IEEE Std 1003.1-2017, \textit{Standard for Information Technology---Portable Operating System Interface (POSIX)}, File Systems and Permissions.
+
+\end{document}
