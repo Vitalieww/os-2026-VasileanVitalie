@@ -1,0 +1,6 @@
+# Ensure shell scripts, C sources and Makefiles always use LF line endings
+*.sh text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.S text eol=lf
+Makefile text eol=lf

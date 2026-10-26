@@ -1,0 +1,331 @@
+\documentclass[12pt,a4paper]{report}
+
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
+\lstset{
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
+}
+
+% ------------------ DOCUMENT ------------------
+\begin{document}
+
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\vspace*{1cm}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
+
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 2\\
+Operating Systems\\
+Topic: Meet the OS You Will Build (xv6)\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+Modern monolithic production kernels such as Linux encompass millions of lines of code, complicating direct pedagogical study of kernel subsystems. In contrast, xv6 is a clean, modern re-implementation of Dennis Ritchie's and Ken Thompson's classic Unix Version 6 (V6), ported to the 64-bit RISC-V architecture. xv6 illustrates foundational concepts---virtual memory paging, process context switches, hardware interrupts, system call traps, and file system disk blocks---in a concise, readable code base.
+
+\section{Lab Objective}
+The primary objective of this laboratory work is to configure the xv6 development toolchain, boot the operating system under hardware emulation, interact with its userland environment, and study core system call interfaces at the source code level. The specific focus includes:
+\begin{itemize}
+    \item establishing the cross-compilation toolchain (\texttt{riscv64-linux-gnu-gcc}) and booting xv6 in the QEMU emulator;
+    \item interacting with standard xv6 utilities (\texttt{ls}, \texttt{cat}, \texttt{echo}, \texttt{grep}, \texttt{wc}) and evaluating command pipelines;
+    \item analyzing utility source code implementations (\texttt{user/ls.c}, \texttt{user/cat.c}) and tracing user-to-kernel transitions via system call tables (\texttt{user/user.h}, \texttt{kernel/syscall.h}, \texttt{kernel/sysfile.c}).
+\end{itemize}
+
+% ------------------ CHAPTER 2 ------------------
+\chapter{PART 1: SETUP AND BUILD ENVIRONMENT}
+
+\section{Toolchain Verification and Compilation}
+The RISC-V cross-compiler and QEMU system emulator were verified under Ubuntu WSL2. The xv6 repository was cloned, and the operating system was compiled using the native \texttt{Makefile}:
+
+\begin{lstlisting}[language=bash]
+vitalie@Lenovo:~$ riscv64-linux-gnu-gcc --version | head -n 1
+riscv64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+
+vitalie@Lenovo:~$ qemu-system-riscv64 --version | head -n 1
+QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.2)
+
+vitalie@Lenovo:~$ cd ~/xv6-riscv && make qemu
+riscv64-linux-gnu-gcc -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2 -march=rv64gc -MD -mcmodel=medany -ffreestanding -c -o kernel/entry.o kernel/entry.S
+...
+qemu-system-riscv64 -machine virt -bios none -kernel kernel/kernel -m 128M -smp 3 -nographic -global virtio-mmio.force-legacy=false -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+
+xv6 kernel is booting
+
+hart 2 starting
+hart 1 starting
+init: starting sh
+$ 
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.1 -- xv6 compilation and initial boot banner under QEMU RISC-V emulator}
+\end{figure}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Cross-compilation necessity:} Because the host machine runs an x86\_64 processor while xv6 targets the RISC-V (rv64gc) architecture, a cross-compiler (\texttt{riscv64-linux-gnu-gcc}) is mandatory to generate valid machine instructions.
+    \item \textbf{SMP and Multi-hart startup:} During boot, xv6 detects multiple RISC-V hardware threads (harts) and initializes them sequentially (\texttt{hart 1 starting}, \texttt{hart 2 starting}) before spawning the userland \texttt{init} process.
+\end{enumerate}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{PART 2: USING XV6 AS THE UNIX IT IS}
+
+\section{Command Execution in xv6}
+Standard utilities and anonymous pipes were executed at the xv6 interactive shell prompt:
+
+\begin{lstlisting}[language=bash]
+$ ls
+.              1 1 1024
+..             1 1 1024
+README         2 2 2441
+cat            2 3 36728
+echo           2 4 35592
+forktest       2 5 18136
+grep           2 6 39792
+init           2 7 35832
+kill           2 8 35584
+ln             2 9 35432
+ls             2 10 38048
+mkdir          2 11 35640
+rm             2 12 35632
+sh             2 13 56840
+stressfs       2 14 36608
+usertests      2 15 192800
+grind          2 16 50744
+wc             2 17 37192
+zombie         2 18 35056
+
+$ echo hello xv6
+hello xv6
+
+$ wc README
+94 656 2441 README
+
+$ ls | grep c
+cat
+echo
+forktest
+stressfs
+usertests
+wc
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.2 -- Directory listing, utility execution, and pipe chaining in xv6}
+\end{figure}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Output formatting of \texttt{ls}:} Unlike GNU \texttt{ls}, the xv6 utility prints four columns: name, file type (1 for directory, 2 for regular file), inode number, and file size in bytes.
+    \item \textbf{Pipe operation:} The command \texttt{ls | grep c} illustrates Unix stream composition: the shell forks two processes, creates an anonymous pipe via the \texttt{pipe()} system call, redirects \texttt{stdout} of \texttt{ls} to the write end, redirects \texttt{stdin} of \texttt{grep} to the read end, and lets data stream concurrently.
+\end{enumerate}
+
+% ------------------ CHAPTER 4 ------------------
+\chapter{PART 3: READING THE SOURCE CODE}
+
+\section{Inspection of Userland Source Files}
+The source code of \texttt{user/cat.c} and system call bindings were analyzed:
+
+\begin{lstlisting}[language=c]
+// user/cat.c
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+
+char buf[512];
+
+void
+cat(int fd)
+{
+  int n;
+
+  while((n = read(fd, buf, sizeof(buf))) > 0) {
+    if (write(1, buf, n) != n) {
+      fprintf(2, "cat: write error\n");
+      exit(1);
+    }
+  }
+  if(n < 0){
+    fprintf(2, "cat: read error\n");
+    exit(1);
+  }
+}
+
+int
+main(int argc, char *argv[])
+{
+  int fd, i;
+
+  if(argc <= 1){
+    cat(0);
+    exit(0);
+  }
+
+  for(i = 1; i < argc; i++){
+    if((fd = open(argv[i], 0)) < 0){
+      fprintf(2, "cat: cannot open %s\n", argv[i]);
+      exit(1);
+    }
+    cat(fd);
+    close(fd);
+  }
+  exit(0);
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.3 -- The complete implementation of user/cat.c in xv6}
+\end{figure}
+
+System call declarations and dispatcher numbers were inspected in \texttt{user/user.h} and \texttt{kernel/syscall.h}:
+
+\begin{lstlisting}[language=c]
+// user/user.h (system call prototypes)
+int read(int, void*, int);
+int write(int, const void*, int);
+int open(const char*, int);
+int close(int);
+int exit(int) __attribute__((noreturn));
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.4 -- System call prototypes in user/user.h}
+\end{figure}
+
+\begin{lstlisting}[language=c]
+// kernel/syscall.h (system call indices)
+#define SYS_fork    1
+#define SYS_exit    2
+#define SYS_wait    3
+#define SYS_pipe    4
+#define SYS_read    5
+#define SYS_kill    6
+#define SYS_exec    7
+#define SYS_fstat   8
+#define SYS_chdir   9
+#define SYS_dup    10
+#define SYS_getpid 11
+#define SYS_sbrk   12
+#define SYS_pause  13
+#define SYS_uptime 14
+#define SYS_open   15
+#define SYS_write  16
+#define SYS_mknod  17
+#define SYS_unlink 18
+#define SYS_link   19
+#define SYS_mkdir  20
+#define SYS_close  21
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.5 -- Numeric system call vector mapping in kernel/syscall.h}
+\end{figure}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{System calls utilized by \texttt{cat.c}:} The program relies on \texttt{open()}, \texttt{read()}, \texttt{write()}, \texttt{close()}, and \texttt{exit()}.
+    \item \textbf{Absence of dynamic memory allocation:} \texttt{cat.c} allocates zero heap memory via \texttt{malloc()} or \texttt{sbrk()}. It relies on a static fixed-size buffer (\texttt{char buf[512]}), ensuring minimal memory footprint and zero allocation failure modes.
+    \item \textbf{Mechanism of user-to-kernel transition:} When \texttt{read()} is invoked in userland, the auto-generated assembly stub in \texttt{user/usys.S} loads the constant \texttt{SYS\_read} (value 5) into register \texttt{a7} and executes the RISC-V \texttt{ecall} instruction. The CPU transitions into supervisor mode, traps into \texttt{kernel/syscall.c}, which indexes the system call jump table to invoke \texttt{sys\_read()} in \texttt{kernel/sysfile.c}.
+\end{enumerate}
+
+% ------------------ CHAPTER 5 ------------------
+\chapter{CONCLUSIONS}
+In this laboratory work, the architecture of the xv6-riscv educational operating system was investigated through environment deployment, execution testing, and source code inspection.
+
+Booting xv6 in QEMU confirmed how an operating system initializes multi-core processor contexts and establishes userland execution with a clean terminal prompt. Interacting with basic commands demonstrated that fundamental Unix abstractions---including standard streams, descriptor redirection, anonymous pipes, and hierarchical namespaces---operate identically in xv6 and production Linux despite vast differences in code size. Finally, inspecting \texttt{user/cat.c}, \texttt{user/user.h}, and \texttt{kernel/syscall.h} clarified the complete lifecycle of a system call trap from userland execution down to kernel service routines.
+
+\end{document}

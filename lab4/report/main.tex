@@ -1,0 +1,501 @@
+\documentclass[12pt,a4paper]{report}
+
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
+\lstset{
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
+}
+
+% ------------------ DOCUMENT ------------------
+\begin{document}
+
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\vspace*{1cm}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
+
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 4\\
+Operating Systems\\
+Topic: The xv6 Shell from the Outside\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+Command line interpreters (shells) serve as the primary interactive user interface to an operating system. While end users frequently perceive the shell and the kernel as a unified entity, UNIX architecture enforces a fundamental separation of responsibilities: the kernel provides process management, virtual memory, descriptor tables, and filesystem storage primitives, whereas the shell acts as a userland program tasked with lexical analysis, line parsing, environment configuration, command dispatching, and stream orchestration via pipes and redirections.
+
+\section{Lab Objective}
+The objective of this laboratory work is to investigate the internal architecture and operational behavior of Unix command interpreters by systematically comparing the minimal educational shell in xv6 (\texttt{user/sh.c}) with the production GNU Bash interpreter in Linux. The key study areas include:
+\begin{itemize}
+    \item updating user utilities in xv6 to match the current kernel system call interface (\texttt{pause()} replacing \texttt{sleep()});
+    \item executing a structured matrix of shell operations in both Linux Bash and xv6 to observe features such as redirections, anonymous pipes, command grouping, sequencing, background jobs, globbing, variable substitution, and quote processing;
+    \item evaluating argument parsing behavior by writing custom diagnostic tools (\texttt{args.c} and \texttt{args\_linux.c}) to reveal who performs wildcard expansion and quote stripping;
+    \item reading and analyzing the source code of \texttt{user/sh.c} to understand command representation and the architectural rationale for built-in commands like \texttt{cd}.
+\end{itemize}
+
+% ------------------ CHAPTER 2 ------------------
+\chapter{PART 1: FIX SLEEP FOR THE CURRENT XV6}
+
+\section{System Call Interface Verification}
+In the modern revision of the xv6-riscv operating system, the system call responsible for relinquishing CPU ticks was updated to \texttt{pause()} to eliminate semantic ambiguities. The declaration was inspected in \texttt{user/user.h}:
+
+\begin{lstlisting}[language=bash]
+vitalie@Lenovo:~/xv6-riscv$ grep -n "pause\|sleep" user/user.h
+25:int pause(int);
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=c]
+// user/user.h - line 25
+int pause(int);
+\end{lstlisting}
+\caption{Figure 2.1 -- System call declaration for pause() in user/user.h}
+\end{figure}
+
+\section{Source Code Implementation}
+The user utility \texttt{user/sleep.c} was implemented to consume a tick duration argument and invoke the updated system call:
+
+\begin{lstlisting}[language=c]
+#include "kernel/types.h"
+#include "user/user.h"
+
+int
+main(int argc, char *argv[])
+{
+  if(argc != 2) {
+    fprintf(2, "usage: sleep <ticks>\n");
+    exit(1);
+  }
+  pause(atoi(argv[1])); // was sleep() before Aug 2025
+  exit(0);
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.2 -- The updated sleep.c implementation using pause()}
+\end{figure}
+
+The \texttt{Makefile} was verified to confirm that \texttt{\$U/\_sleep} is compiled into the root file system image (\texttt{fs.img}) under \texttt{UPROGS}.
+
+\section{Execution and Verification}
+The utility was compiled and tested under the xv6 QEMU emulator:
+
+\begin{lstlisting}[language=bash]
+$ sleep
+usage: sleep <ticks>
+$ sleep 20
+$
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.3 -- Verification of sleep utility in xv6 with error validation and valid tick delay}
+\end{figure}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{PART 2: BASH VERSUS THE XV6 SHELL}
+
+\section{Comparative Experiment Matrix}
+Ten standardized command constructions were executed in both the Linux Bash environment (within a test directory containing \texttt{README}) and the xv6 interactive shell. Table \ref{tab:shell_comp} summarizes the observed behavioral responses.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{4.2cm}p{2.5cm}p{4.5cm}p{4.5cm}}
+\toprule
+\textbf{Command} & \textbf{Construct} & \textbf{Linux Bash} & \textbf{xv6 Shell} \\
+\midrule
+\texttt{echo hello > f; cat < f} & I/O Redirection & Prints \texttt{hello}. Correctly redirects fd 1 then fd 0. & Prints \texttt{hello}. Redirects descriptors via \texttt{open} and \texttt{dup}. \\
+\midrule
+\texttt{ls | grep READ} & Pipe & Prints \texttt{README}. Pipes stdout of ls to stdin of grep. & Prints \texttt{README}. Implements pipe via kernel \texttt{pipe()} system call. \\
+\midrule
+\texttt{(echo a; echo b) | wc} & Grouping / Pipe & Prints \texttt{2 2 4}. Subshell evaluated and buffered into pipe. & Prints \texttt{2 2 4}. Implements nested command tree evaluation. \\
+\midrule
+\texttt{echo one; echo two} & Sequence & Prints \texttt{one} then \texttt{two} sequentially. & Prints \texttt{one} then \texttt{two} sequentially (\texttt{;} operator). \\
+\midrule
+\texttt{echo bg \&} & Background & Launches async job; prints job PID and outputs \texttt{bg}. & Executes asynchronously via child fork without blocking shell. \\
+\midrule
+\texttt{ls *} & Wildcard (Glob) & Expands \texttt{*} to all files matching current directory. & Errors: \texttt{ls: cannot open *}. Looks for literal filename \texttt{*}. \\
+\midrule
+\texttt{echo \$HOME} & Variable Expansion & Expands to user home path: \texttt{/home/vitalie}. & Prints literal \texttt{\$HOME}. No environment variable support. \\
+\midrule
+\texttt{echo "a b"} & Quote Stripping & Prints \texttt{a b}. Quotes stripped by tokenizer. & Prints \texttt{"a b"} verbatim with double quotes preserved. \\
+\midrule
+\texttt{mkdir d; cd d; ls ..} & PATH search & Creates \texttt{d}, enters it, and resolves \texttt{ls} via \texttt{\$PATH}. & \texttt{ls ..} fails (\texttt{exec ls failed}) due to lack of \texttt{PATH} lookup. \\
+\midrule
+\texttt{[Arrow Up, Tab, Ctrl+R]} & Line Editing & Recalls history buffer and auto-completes filenames. & Emits raw terminal escape codes; line editor not present. \\
+\bottomrule
+\end{tabular}
+\caption{Table 3.1 -- Comparative analysis of GNU Bash versus the xv6 minimalist shell}
+\label{tab:shell_comp}
+\end{table}
+
+\section{Real Execution Outputs}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=bash]
+vitalie@Lenovo:~/shtest$ echo hello > f; cat < f
+hello
+vitalie@Lenovo:~/shtest$ ls | grep READ
+README
+vitalie@Lenovo:~/shtest$ (echo a; echo b) | wc
+      2       2       4
+vitalie@Lenovo:~/shtest$ echo one; echo two
+one
+two
+vitalie@Lenovo:~/shtest$ echo bg &
+[1] 11330
+bg
+vitalie@Lenovo:~/shtest$ ls *
+args_linux.c  f  README
+vitalie@Lenovo:~/shtest$ echo $HOME
+/home/vitalie
+vitalie@Lenovo:~/shtest$ echo "a b"
+a b
+\end{lstlisting}
+\caption{Figure 3.1 -- Execution output for commands in GNU Bash (Linux)}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=bash]
+$ echo hello > f; cat < f
+hello
+$ ls | grep READ
+README
+$ (echo a; echo b) | wc
+2 2 4
+$ echo one; echo two
+one
+two
+$ echo bg &
+$ bg
+$ ls *
+ls: cannot open *
+$ echo $HOME
+$HOME
+$ echo "a b"
+"a b"
+\end{lstlisting}
+\caption{Figure 3.2 -- Execution output for identical command stream in xv6 shell}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=bash]
+$ mkdir d
+$ cd d
+$ ls ..
+exec ls failed
+$ ../ls ..
+.              1 1 1024
+..             1 1 1024
+README         2 2 2441
+cat            2 3 36728
+d              1 22 32
+$
+\end{lstlisting}
+\caption{Figure 3.3 -- Directory change and binary lookup failure in xv6 due to lack of PATH}
+\end{figure}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Common features vs. Bash exclusive capabilities:} Both interpreters share fundamental Unix kernel primitives: descriptor redirection (\texttt{<}, \texttt{>}), inter-process anonymous pipes (\texttt{|}), command sequencing (\texttt{;}), grouping (\texttt{()}), and asynchronous execution (\texttt{\&}). Conversely, features exclusive to Bash are performed entirely in userland: globbing (\texttt{*}), variable evaluation (\texttt{\$}), quote processing, directory searching via \texttt{PATH}, command history, and readline tab-completion.
+    \item \textbf{Behavior of \texttt{ls} after \texttt{cd d} in xv6:} In xv6, \texttt{ls ..} fails with \texttt{exec ls failed} because xv6 lacks an environment \texttt{PATH} mechanism. It attempts to load the binary \texttt{ls} strictly from the current working directory \texttt{d}. Because the binary exists at the root directory, the invocation succeeds only when addressing it relatively as \texttt{../ls ..}.
+    \item \textbf{Impact and ease of feature implementation:} In daily usage, the absence of history and Tab-completion degrades productivity most severely. From an implementation perspective, quote removal would be the easiest feature to add to \texttt{user/sh.c}, requiring only token scanning logic to strip matching leading and trailing quote bytes during parsing.
+\end{enumerate}
+
+% ------------------ CHAPTER 4 ------------------
+\chapter{PART 3: WHO EXPANDS *? ARGV DIAGNOSTICS}
+
+\section{Implementation of Diagnostic Programs}
+To establish conclusively whether the operating system kernel or the command interpreter is responsible for wildcard expansion and quote removal, two companion utilities were deployed: \texttt{args.c} for xv6 and \texttt{args\_linux.c} for Linux.
+
+\begin{lstlisting}[language=c]
+// args.c (xv6)
+#include "kernel/types.h"
+#include "user/user.h"
+
+int main(int argc, char *argv[]) {
+  printf("argc = %d\n", argc);
+  for(int i = 0; i < argc; i++)
+    printf("argv[%d] = [%s]\n", i, argv[i]);
+  exit(0);
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 4.1 -- Implementation of user/args.c for parameter verification in xv6}
+\end{figure}
+
+\begin{lstlisting}[language=c]
+// args_linux.c (Linux)
+#include <stdio.h>
+
+int main(int argc, char *argv[]) {
+  printf("argc = %d\n", argc);
+  for(int i = 0; i < argc; i++)
+    printf("argv[%d] = [%s]\n", i, argv[i]);
+  return 0;
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 4.2 -- Implementation of \texttt{args\_linux.c} for parameter verification in Linux}
+\end{figure}
+
+\section{Experimental Output Comparison}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=bash]
+vitalie@Lenovo:~/shtest$ ./args one   two      three
+argc = 4
+argv[0] = [./args]
+argv[1] = [one]
+argv[2] = [two]
+argv[3] = [three]
+
+vitalie@Lenovo:~/shtest$ ./args *.c "x y"
+argc = 3
+argv[0] = [./args]
+argv[1] = [args_linux.c]
+argv[2] = [x y]
+
+vitalie@Lenovo:~/shtest$ ./args $HOME
+argc = 2
+argv[0] = [./args]
+argv[1] = [/home/vitalie]
+
+vitalie@Lenovo:~/shtest$ ./args 'single quoted'
+argc = 2
+argv[0] = [./args]
+argv[1] = [single quoted]
+\end{lstlisting}
+\caption{Figure 4.3 -- Parameter parsing output in Linux Bash}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=bash]
+$ args one   two      three
+argc = 4
+argv[0] = [args]
+argv[1] = [one]
+argv[2] = [two]
+argv[3] = [three]
+
+$ args *.c "x y"
+argc = 4
+argv[0] = [args]
+argv[1] = [*.c]
+argv[2] = ["x]
+argv[3] = [y"]
+
+$ args $HOME
+argc = 2
+argv[0] = [args]
+argv[1] = [$HOME]
+\end{lstlisting}
+\caption{Figure 4.4 -- Parameter parsing output in xv6}
+\end{figure}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Comparison of \texttt{args *.c "x y"}:}
+    \begin{itemize}
+        \item In Linux Bash: \texttt{argc = 3}. The pattern \texttt{*.c} was expanded by Bash into matching directory filenames (\texttt{args\_linux.c}), and the quoted string was treated as a single argument \texttt{[x y]} with enclosing quotation marks discarded.
+        \item In xv6: \texttt{argc = 4}. The pattern \texttt{*.c} was passed literally as \texttt{[*.c]}. Due to the absence of quotation logic, the delimiter space divided \texttt{"x y"} into two distinct arguments: \texttt{["x]} and \texttt{[y"]}.
+    \end{itemize}
+    \item \textbf{Responsibility for expansion and quote removal:} The \textbf{command interpreter (shell)} performs all globbing and quote stripping. The kernel system call \texttt{execve} simply receives the finalized pointer array \texttt{argv[]}. The application program itself never encounters the original unexpanded wildcard tokens unless expansion is skipped or prevented by escaping.
+    \item \textbf{Handling of consecutive whitespace:} Both interpreters collapse consecutive spaces into a single lexical separator when partitioning command-line words.
+\end{enumerate}
+
+% ------------------ CHAPTER 5 ------------------
+\chapter{PART 4: SOURCE CODE ANALYSIS OF USER/SH.C}
+
+\section{Inspecting Command Representations}
+The implementation of \texttt{user/sh.c} was examined using standard text analysis tools:
+
+\begin{lstlisting}[language=bash]
+vitalie@Lenovo:~/xv6-riscv$ wc -l user/sh.c
+499 user/sh.c
+vitalie@Lenovo:~/xv6-riscv$ grep -n "#define" user/sh.c
+8:#define EXEC  1
+9:#define REDIR 2
+10:#define PIPE  3
+11:#define LIST  4
+12:#define BACK  5
+14:#define MAXARGS 10
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=c]
+// user/sh.c lines 8-12
+#define EXEC  1
+#define REDIR 2
+#define PIPE  3
+#define LIST  4
+#define BACK  5
+\end{lstlisting}
+\caption{Figure 5.1 -- Command type definitions in user/sh.c}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=c]
+// user/sh.c runcmd() dispatcher
+void runcmd(struct cmd *cmd) {
+  ...
+  switch(cmd->type){
+  case EXEC:
+    ...
+    exec(ecmd->argv[0], ecmd->argv);
+    break;
+  case REDIR:
+    ...
+  case LIST:
+    ...
+  case PIPE:
+    ...
+  case BACK:
+    ...
+  }
+  exit(0);
+}
+\end{lstlisting}
+\caption{Figure 5.2 -- The recursive command dispatcher in user/sh.c}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{lstlisting}[language=c]
+// user/sh.c line 170 - Handling cd command
+if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
+  // Clumsy but will have to do ...
+  buf[strlen(buf)-1] = 0;  // chop \n
+  if(chdir(buf+3) < 0)
+    fprintf(2, "cannot cd %s\n", buf+3);
+  continue;
+}
+\end{lstlisting}
+\caption{Figure 5.3 -- Built-in handling of the cd command directly in main()}
+\end{figure}
+
+\section{Analysis and Observations}
+\begin{enumerate}
+    \item \textbf{Command types and triggering characters:}
+    \begin{itemize}
+        \item \texttt{EXEC (1)}: Standard binary execution.
+        \item \texttt{REDIR (2)}: Triggered by \texttt{<} (input redirection) or \texttt{>} (output redirection).
+        \item \texttt{PIPE (3)}: Triggered by the pipe character \texttt{|}.
+        \item \texttt{LIST (4)}: Triggered by the sequential semicolon \texttt{;}.
+        \item \texttt{BACK (5)}: Triggered by the background token \texttt{\&}.
+    \end{itemize}
+    \item \textbf{Why \texttt{cd} cannot be an external executable:} In \texttt{user/sh.c}, \texttt{cd} is intercepted prior to \texttt{fork()} and handled directly via the \texttt{chdir()} system call. If \texttt{cd} were implemented as an external binary, the shell would fork a child process, execute the utility, change the working directory of the child, and then terminate. The parent shell process would remain unaffected in its original working directory. Therefore, \texttt{cd} must intrinsically be a built-in shell operation.
+    \item \textbf{Absence of \texttt{*} and \texttt{\$} parsing:} A comprehensive search across \texttt{user/sh.c} demonstrates zero occurrences of wildcard matching or variable parsing logic. The tokenizer simply delimits strings by whitespace and pass-through tokens, explaining why xv6 treats globs and variable symbols as raw literal text.
+\end{enumerate}
+
+% ------------------ CHAPTER 6 ------------------
+\chapter{CONCLUSIONS}
+Through this laboratory work, the architecture of Unix command interpreters was investigated by comparing the educational xv6 shell with GNU Bash under Linux.
+
+The experimental findings clearly established the boundary between operating system kernel facilities and userland shell abstractions. While process isolation, file descriptors, pipes, and process creation are provided directly by kernel system calls (\texttt{fork}, \texttt{exec}, \texttt{pipe}, \texttt{dup}), advanced shell ergonomics---such as wildcard expansion (globbing), variable interpolation, quotation interpretation, line editing, and command history---are implemented exclusively within user-space shell code. 
+
+Furthermore, diagnosing parameter vector propagation through \texttt{args.c} and \texttt{args\_linux.c} concretely illustrated that the shell formats \texttt{argv[]} before the application process starts execution. Finally, source code inspection of \texttt{user/sh.c} provided foundational insight into why process directory navigation (\texttt{cd}) must be built directly into the parent shell loop, consolidating theoretical knowledge with practical systems programming reality.
+
+\end{document}
