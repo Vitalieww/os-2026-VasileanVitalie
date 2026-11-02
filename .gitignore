@@ -1,0 +1,15 @@
+# TeX auxiliary files
+*.aux
+*.log
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# Build artifacts
+*.o
+*.d
+fs.img
+.gdbinit
+

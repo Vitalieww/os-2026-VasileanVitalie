@@ -113,20 +113,164 @@ Chisinau -- 2026
 \chapter{INTRODUCTION AND GOAL}
 
 \section{Introduction}
-Inside the xv6 teaching operating system, standard C libraries such as \texttt{glibc}, tracing utilities like \texttt{strace}, and manual pages do not exist. The user-space execution environment interfaces with the underlying RISC-V hardware solely through a minimalist set of 22 fundamental kernel system calls. Process management and inter-process communication rely directly on primitives exposed in \texttt{user/user.h}: \texttt{fork}, \texttt{pipe}, \texttt{read}, \texttt{write}, \texttt{close}, \texttt{wait}, \texttt{exit}, and \texttt{getpid}. Understanding how unidirectional byte streams function at this bare interface provides deep insight into kernel resource accounting, descriptor table isolation, and concurrent process scheduling without user-space runtime abstractions.
+Inside the xv6 teaching operating system, standard C runtime libraries such as \texttt{glibc}, tracing utilities like \texttt{strace}, and manual pages do not exist. The user-space execution environment interfaces with the underlying RISC-V hardware solely through a minimalist set of fundamental kernel system calls. Process management and inter-process communication rely directly on primitives exposed in \texttt{user/user.h}: \texttt{fork}, \texttt{exec}, \texttt{wait}, \texttt{pipe}, \texttt{read}, \texttt{write}, \texttt{close}, \texttt{exit}, and \texttt{getpid}. 
+
+Understanding how userland processes transition from independent task execution to structured, concurrent pipeline architectures provides deep insight into kernel resource accounting, descriptor table isolation, and concurrent process scheduling without user-space runtime abstractions.
 
 \section{Lab Objective}
 The primary goals of this laboratory work are:
 \begin{itemize}
+    \item implementing \texttt{run}, a utility inside xv6 demonstrating process dispatching, program loading, and exit code collection via \texttt{fork}, \texttt{exec}, and \texttt{wait};
     \item implementing \texttt{pingpong}, a synchronization protocol where parent and child processes bounce a byte bidirectionally using two distinct pipes;
     \item writing \texttt{primes}, Doug McIlroy's concurrent prime sieve pipeline using chained processes connected via pipes;
     \item managing file descriptor hygiene under strict kernel constraints, preventing file descriptor leaks (\texttt{NOFILE}) and avoiding indefinite pipeline hangs caused by unclosed write descriptors;
     \item observing kernel process management limits (\texttt{NPROC}) and recursion constraints enforced by compiler flags (\texttt{-Werror});
-    \item implementing the optional stretch utility \texttt{xargs} to read newline-delimited command arguments from standard input and dispatch them via \texttt{fork}, \texttt{exec}, and \texttt{wait}.
+    \item implementing the extended utility \texttt{xargs} to read newline-delimited command arguments from standard input and dispatch them via \texttt{fork}, \texttt{exec}, and \texttt{wait}.
 \end{itemize}
 
 % ------------------ CHAPTER 2 ------------------
-\chapter{BIDIRECTIONAL COMMUNICATION: PINGPONG}
+\chapter{PART 1: RUN, INSIDE XV6}
+
+\section{Implementation of \texttt{user/run.c}}
+In Linux (Lab 7), process creation and command dispatching were studied using standard POSIX calls (\texttt{fork}, \texttt{execvp}, \texttt{waitpid}). In this section, identical concepts are implemented natively within the unprivileged userland of xv6. 
+
+The \texttt{run} utility forks a child process. The child process executes the specified command via \texttt{exec()}. If \texttt{exec()} fails, the child outputs an error and terminates with exit code \texttt{1}. The parent waits for the child's termination using \texttt{wait(\&status)} and outputs the returned exit status. If invoked without arguments, \texttt{run} defaults to executing \texttt{echo hello from the child}.
+
+\begin{lstlisting}[language=C, caption={Source code of \texttt{user/run.c}}]
+#include "kernel/types.h"
+#include "user/user.h"
+
+int
+main(int argc, char *argv[])
+{
+  int pid;
+  int status = 0;
+
+  if (argc < 2) {
+    // Default test run when invoked without arguments
+    char *echo_argv[] = { "echo", "hello", "from", "the", "child", 0 };
+    pid = fork();
+    if (pid < 0) {
+      fprintf(2, "run: fork failed\n");
+      exit(1);
+    }
+    if (pid == 0) {
+      printf("child: pid=%d\n", getpid());
+      exec("echo", echo_argv);
+      fprintf(2, "run: exec echo failed\n");
+      exit(1);
+    }
+    wait(&status);
+    printf("parent: child exited with status %d\n", status);
+    exit(0);
+  }
+
+  // General run invocation: run <command> [args...]
+  pid = fork();
+  if (pid < 0) {
+    fprintf(2, "run: fork failed\n");
+    exit(1);
+  }
+
+  if (pid == 0) {
+    printf("child: pid=%d\n", getpid());
+    exec(argv[1], &argv[1]);
+    fprintf(2, "run: exec %s failed\n", argv[1]);
+    exit(1);
+  }
+
+  wait(&status);
+  printf("parent: child exited with status %d\n", status);
+  exit(0);
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.1 -- Source code of user/run.c in xv6}
+\end{figure}
+
+\section{Makefile Integration and Execution Verification}
+The target \texttt{\$U/\_run\textbackslash} was registered in the \texttt{UPROGS} variable inside the xv6 \texttt{Makefile}. The operating system was then compiled and launched under QEMU to evaluate normal execution, argument passing, and error handling:
+
+\begin{lstlisting}[language=bash]
+$ make qemu
+...
+xv6 kernel is booting
+hart 2 starting
+hart 1 starting
+init: starting sh
+
+$ run
+child: pid=4
+hello from the child
+parent: child exited with status 0
+
+$ run echo hello from the child
+child: pid=5
+hello from the child
+parent: child exited with status 0
+
+$ run ls
+child: pid=6
+.              1 1 1024
+..             1 1 1024
+README         2 2 2441
+cat            2 3 36728
+echo           2 4 35592
+forktest       2 5 18136
+grep           2 6 39792
+init           2 7 35832
+kill           2 8 35584
+ln             2 9 35432
+ls             2 10 38048
+mkdir          2 11 35640
+rm             2 12 35632
+sh             2 13 56840
+stressfs       2 14 36608
+usertests      2 15 192800
+grind          2 16 50744
+wc             2 17 37192
+zombie         2 18 35056
+run            2 19 36240
+pingpong       2 20 36184
+primes         2 21 37016
+xargs          2 22 36800
+parent: child exited with status 0
+
+$ run nosuchprog
+child: pid=7
+run: exec nosuchprog failed
+parent: child exited with status 1
+$ 
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.2 -- Execution verification of run utility under xv6}
+\end{figure}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{Three System Calls Used and Linux Comparison:}
+    \begin{itemize}
+        \item \textbf{Calls used in xv6:} \texttt{fork()}, \texttt{exec()}, and \texttt{wait()}.
+        \item \textbf{Correspondence to Linux (Lab 7):} In Linux Lab 7, we employed \texttt{fork()}, \texttt{execvp()} (or \texttt{execlp()}), and \texttt{waitpid()}.
+        \item \textbf{Key differences:} In xv6, \texttt{exec(path, argv)} does not parse an environment \texttt{\$PATH} string, requiring a direct binary name located in the root filesystem. Furthermore, xv6's \texttt{wait(\&status)} directly copies the integer exit value passed to \texttt{exit(status)}, whereas Linux \texttt{waitpid} packs termination signals and exit codes into a composite bitmask that must be unwrapped via macros (\texttt{WIFEXITED}, \texttt{WEXITSTATUS}).
+    \end{itemize}
+
+    \item \textbf{Origin of Output in the \texttt{echo} Case:}
+    The \texttt{echo} program prints \texttt{"hello from the child"}, running within the address space of the **child process**. When the child invokes \texttt{exec("echo", ...)}, the kernel replaces the child process's text and data memory pages with the binary of \texttt{echo}. The process retains its PID (e.g., PID 4) and file descriptors, running \texttt{echo}'s \texttt{main()}, which writes its arguments to descriptor 1 (\texttt{stdout}) before terminating.
+
+    \item \textbf{Exit Status Comparison (\texttt{nosuchprog}):}
+    \begin{itemize}
+        \item When \texttt{exec()} fails in xv6 because the requested program does not exist, the kernel returns \texttt{-1} to the child process. The child code detects this and explicitly invokes \texttt{exit(1)}. Consequently, the kernel records exit code \texttt{1}, which the parent retrieves via \texttt{wait(\&status)}.
+        \item Under Linux, POSIX standards and shell conventions reserve exit status \texttt{127} specifically to denote "command not found" (and \texttt{126} for "command found but not executable"). In Lab 7, \texttt{myrun.c} followed this standard by calling \texttt{exit(127)} upon \texttt{execvp} failure. xv6 maintains a simple integer convention where \texttt{1} indicates a generic error.
+    \end{itemize}
+\end{enumerate}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{PART 2: BIDIRECTIONAL COMMUNICATION (PINGPONG)}
 
 \section{Implementation of \texttt{user/pingpong.c}}
 In xv6 and standard UNIX semantics, a pipe is strictly unidirectional. Bidirectional communication requires two separate pipes: one for parent-to-child transmission (\texttt{p2c}) and another for child-to-parent transmission (\texttt{c2p}). The child reads a single byte from \texttt{p2c}, prints its PID along with the confirmation message, and forwards the byte back via \texttt{c2p} before exiting.
@@ -184,34 +328,36 @@ main(int argc, char *argv[])
 }
 \end{lstlisting}
 
+\begin{figure}[H]
+\centering
+\caption{Figure 3.1 -- Source code of user/pingpong.c in xv6}
+\end{figure}
+
 \section{Execution and Verification}
 After registering \texttt{\$U/\_pingpong\textbackslash} inside the \texttt{UPROGS} section of the \texttt{Makefile}, the kernel was built and launched inside QEMU:
-\begin{lstlisting}[language=bash]
-$ make qemu
-...
-xv6 kernel is booting
 
-hart 2 starting
-hart 1 starting
-init: starting sh
+\begin{lstlisting}[language=bash]
 $ pingpong
 4: received ping
 3: received pong
 $ 
 \end{lstlisting}
 
-\section{Analysis and Observations}
+\begin{figure}[H]
+\centering
+\caption{Figure 3.2 -- Execution trace of pingpong inside xv6}
+\end{figure}
+
+\section{Answers to Required Observation Questions}
 \begin{enumerate}
     \item \textbf{Requirement for Two Independent Pipes:}
     A UNIX pipe provides a single unidirectional byte stream. If both processes shared a single pipe descriptor pair, a severe race condition would emerge: the parent writing the byte into the pipe could immediately execute a subsequent \texttt{read()} and consume its own transmitted byte before the child process is scheduled by the kernel. Allocating two distinct channels guarantees isolation and prevents self-reads.
     \item \textbf{Implicit Synchronization via Blocking Reads:}
-    The source code contains no explicit polling loops or conditional synchronization barriers. Synchronization is achieved naturally through the blocking semantics of the \texttt{read()} system call. When the parent invokes \texttt{read(c2p[0], ...)}, the calling process is transitioned into a sleeping state by the xv6 scheduler because \texttt{c2p} contains no data. The parent remains suspended until the child executes \texttt{write(c2p[1], ...)}, which wakes the sleeping parent process.
-    \item \textbf{Process Identifier (PID) Allocation Order:}
-    The child process outputs a larger PID (\texttt{4}) than the parent (\texttt{3}). The xv6 kernel maintains a global monotonic integer counter for process identifiers. The parent process is allocated a PID upon its instantiation by the initial shell; when it later calls \texttt{fork()}, the kernel allocates the next sequential integer to the newly created child.
+    The source code contains no explicit polling loops or busy-waiting. Synchronization is achieved naturally through the blocking semantics of the \texttt{read()} system call. When the parent invokes \texttt{read(c2p[0], ...)}, the calling process is transitioned into a sleeping state by the xv6 scheduler because \texttt{c2p} contains no data. The parent remains suspended until the child executes \texttt{write(c2p[1], ...)}, which wakes the sleeping parent process.
 \end{enumerate}
 
-% ------------------ CHAPTER 3 ------------------
-\chapter{CONCURRENT PRIME SIEVE: PRIMES}
+% ------------------ CHAPTER 4 ------------------
+\chapter{PART 3: CONCURRENT PRIME SIEVE (PRIMES)}
 
 \section{Implementation of \texttt{user/primes.c}}
 Doug McIlroy's pipeline model calculates prime numbers by generating an autonomous pipeline of processes. The root process generates integers from 2 through 35 and pushes them into an initial pipe. Each downstream stage reads its first available integer, which is mathematically guaranteed to be prime. The stage prints the value, creates a new pipe, forks a successor stage, and filters remaining integers: values non-divisible by its assigned prime are forwarded, while multiples are dropped.
@@ -300,8 +446,14 @@ main(int argc, char *argv[])
 }
 \end{lstlisting}
 
+\begin{figure}[H]
+\centering
+\caption{Figure 4.1 -- Source code of user/primes.c in xv6}
+\end{figure}
+
 \section{Execution and Verification}
-Adding \texttt{\$U/\_primes\textbackslash} to the \texttt{Makefile} and executing under QEMU yielded the sequence of primes from 2 to 31:
+Adding \texttt{\$U/\_primes\textbackslash} to the \texttt{Makefile} and executing under QEMU yielded the complete sequence of primes from 2 to 31:
+
 \begin{lstlisting}[language=bash]
 $ primes
 prime 2
@@ -318,6 +470,11 @@ prime 31
 $ 
 \end{lstlisting}
 
+\begin{figure}[H]
+\centering
+\caption{Figure 4.2 -- Execution output of primes sieve in xv6}
+\end{figure}
+
 \section{Analysis and Observations}
 \begin{enumerate}
     \item \textbf{Process Count at Execution Milestone:}
@@ -327,13 +484,13 @@ $
     \end{equation}
     where $N_{\text{main}}$ is the initial generator process, and $N_{\text{primes}}$ corresponds to the 11 discovered primes in the range $[2, 35]$: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, and 31.
     \item \textbf{Upper Limit Scaling (Limit 280 Experiment):}
-    Increasing the generation boundary from 35 to 280 tests kernel capacity limits. In the interval $[2, 280]$, there are 59 prime numbers. In xv6, \texttt{kernel/param.h} fixes \texttt{NPROC = 64} and \texttt{NOFILE = 16}. With \texttt{init}, \texttt{sh}, and the initial generator process active, spawning 59 sieve stages requires 62 process slots, approaching the system ceiling. If all unused file descriptors are meticulously closed, the pipeline successfully finishes on stock xv6. However, if file descriptors are leaked, processes hit \texttt{NOFILE} (16 file descriptors) long before process limits are reached, resulting in failed \texttt{pipe()} invocations and early termination.
+    In the interval $[2, 280]$, there are 59 prime numbers. In xv6, \texttt{kernel/param.h} fixes \texttt{NPROC = 64} and \texttt{NOFILE = 16}. With \texttt{init}, \texttt{sh}, and the initial generator process active, spawning 59 sieve stages requires 62 process slots, approaching the system ceiling. If all unused file descriptors are meticulously closed, the pipeline successfully finishes on stock xv6. However, if file descriptors are leaked, processes hit \texttt{NOFILE} (16 file descriptors) long before process limits are reached, resulting in failed \texttt{pipe()} invocations and early termination.
     \item \textbf{Parallelism Characteristics:}
-    This architecture constitutes a parallel pipeline sieve because each stage functions as an independent concurrent filtering worker connected asynchronously via memory-buffered pipes. Later stages can filter and process earlier values while upstream processes simultaneously generate, test, and transmit subsequent numbers through the pipeline.
+    This architecture constitutes a parallel pipeline sieve because each stage functions as an independent concurrent filtering worker connected asynchronously via memory-buffered pipes.
 \end{enumerate}
 
-% ------------------ CHAPTER 4 ------------------
-\chapter{BONUS IMPLEMENTATION: XARGS}
+% ------------------ CHAPTER 5 ------------------
+\chapter{PART 4: EXTENDED UTILITY: XARGS}
 
 \section{Implementation of \texttt{user/xargs.c}}
 The \texttt{xargs} utility reads input from standard input line by line and executes the target utility for each row, appending the parsed line as command-line arguments. In xv6, no environment \texttt{PATH} exists, necessitating direct binary invocation via \texttt{exec}.
@@ -410,21 +567,32 @@ main(int argc, char *argv[])
 }
 \end{lstlisting}
 
+\begin{figure}[H]
+\centering
+\caption{Figure 5.1 -- Source code of user/xargs.c in xv6}
+\end{figure}
+
 \section{Execution and Verification}
 The command execution flow was verified against the requirement specified in the lab manual:
+
 \begin{lstlisting}[language=bash]
 $ echo hello too | xargs echo bye
 bye hello too
 $ 
 \end{lstlisting}
 
-% ------------------ CONCLUSION ------------------
-\chapter*{CONCLUSION}
-\addcontentsline{toc}{chapter}{CONCLUSION}
+\begin{figure}[H]
+\centering
+\caption{Figure 5.2 -- Verification of xargs pipeline execution}
+\end{figure}
+
+% ------------------ CHAPTER 6 ------------------
+\chapter{CONCLUSIONS}
 This laboratory work explored inter-process communication and concurrent scheduling inside the xv6 operating system using bare kernel system calls. Implementing low-level pipe primitives directly without runtime library abstractions provided practical insight into operating system resource isolation and scheduling mechanics.
 
 Key conclusions derived from the experiments include:
 \begin{itemize}
+    \item \textbf{Process Dispatching and Status Propagation:} The \texttt{run} utility clarified how parent processes control execution via \texttt{fork()}, transfer address spaces through \texttt{exec()}, and accurately capture child termination codes with \texttt{wait(\&status)}.
     \item \textbf{Descriptor Table Isolation:} Pipes are unidirectional byte buffers. Full-duplex messaging between parent and child processes requires two separate pipes to prevent self-consumption and race conditions.
     \item \textbf{Blocking Synchronization and EOF Mechanics:} A reading process blocks automatically when an incoming pipe is empty. Crucially, an end-of-file condition (\texttt{EOF}) is only raised when every write end referencing the pipe across the entire system is closed; omitting closures leads directly to deadlocks.
     \item \textbf{Kernel Table Limits:} Concurrent pipeline architectures are heavily bounded by process table capacity (\texttt{NPROC}) and per-process descriptor limits (\texttt{NOFILE}). Rigorous file descriptor cleanup is essential for sustained system stability.

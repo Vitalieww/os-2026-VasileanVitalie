@@ -71,7 +71,10 @@
 % ------------------ TITLE PAGE ------------------
 \begin{titlepage}
 \centering
-\vspace*{1cm}
+\begin{figure}[htbp]
+\centering
+\IfFileExists{img/utm_logo.png}{\includegraphics[width=0.2\textwidth]{img/utm_logo.png}}{\vspace{2cm}}
+\end{figure}
 MINISTRY OF EDUCATION AND RESEARCH\\
 OF THE REPUBLIC OF MOLDOVA\\
 Technical University of Moldova\\
@@ -110,14 +113,16 @@ Chisinau -- 2026
 \chapter{INTRODUCTION AND GOAL}
 
 \section{Introduction}
-Modern monolithic production kernels such as Linux encompass millions of lines of code, complicating direct pedagogical study of kernel subsystems. In contrast, xv6 is a clean, modern re-implementation of Dennis Ritchie's and Ken Thompson's classic Unix Version 6 (V6), ported to the 64-bit RISC-V architecture. xv6 illustrates foundational concepts---virtual memory paging, process context switches, hardware interrupts, system call traps, and file system disk blocks---in a concise, readable code base.
+Modern monolithic production kernels such as Linux encompass millions of lines of code, complicating direct pedagogical study of kernel subsystems. In contrast, xv6 is a clean, modern re-implementation of Dennis Ritchie's and Ken Thompson's classic Unix Version 6 (V6), ported to the 64-bit RISC-V architecture. xv6 illustrates foundational concepts---virtual memory paging, process context switches, hardware interrupts, system call traps, and file system disk blocks---in a concise, readable codebase.
 
 \section{Lab Objective}
-The primary objective of this laboratory work is to configure the xv6 development toolchain, boot the operating system under hardware emulation, interact with its userland environment, and study core system call interfaces at the source code level. The specific focus includes:
+The primary objective of this laboratory work is to configure the xv6 development toolchain, boot the operating system under hardware emulation, interact with its userland environment, study core system call interfaces at the source code level, and implement a custom userland utility. The specific scope comprises:
 \begin{itemize}
     \item establishing the cross-compilation toolchain (\texttt{riscv64-linux-gnu-gcc}) and booting xv6 in the QEMU emulator;
     \item interacting with standard xv6 utilities (\texttt{ls}, \texttt{cat}, \texttt{echo}, \texttt{grep}, \texttt{wc}) and evaluating command pipelines;
-    \item analyzing utility source code implementations (\texttt{user/ls.c}, \texttt{user/cat.c}) and tracing user-to-kernel transitions via system call tables (\texttt{user/user.h}, \texttt{kernel/syscall.h}, \texttt{kernel/sysfile.c}).
+    \item answering core architectural observation questions regarding process isolation, stream composition, and userland-versus-kernel separation;
+    \item analyzing utility source code implementations (\texttt{user/cat.c}) and tracing user-to-kernel transitions via system call tables (\texttt{user/user.h}, \texttt{kernel/syscall.h}, \texttt{kernel/sysfile.c});
+    \item developing, integrating, and verifying the \texttt{sleep} utility in \texttt{user/sleep.c}.
 \end{itemize}
 
 % ------------------ CHAPTER 2 ------------------
@@ -154,13 +159,13 @@ $
 \section{Analysis and Observations}
 \begin{enumerate}
     \item \textbf{Cross-compilation necessity:} Because the host machine runs an x86\_64 processor while xv6 targets the RISC-V (rv64gc) architecture, a cross-compiler (\texttt{riscv64-linux-gnu-gcc}) is mandatory to generate valid machine instructions.
-    \item \textbf{SMP and Multi-hart startup:} During boot, xv6 detects multiple RISC-V hardware threads (harts) and initializes them sequentially (\texttt{hart 1 starting}, \texttt{hart 2 starting}) before spawning the userland \texttt{init} process.
+    \item \textbf{SMP and Multi-hart startup:} During boot, xv6 initializes hardware thread 0 (hart 0), which configures core memory mappings, and subsequently brings up secondary cores (\texttt{hart 1 starting}, \texttt{hart 2 starting}). Once kernel subsystems are online, the kernel spawns the userland \texttt{init} process, which in turn launches the shell (\texttt{sh}).
 \end{enumerate}
 
 % ------------------ CHAPTER 3 ------------------
 \chapter{PART 2: USING XV6 AS THE UNIX IT IS}
 
-\section{Command Execution in xv6}
+\section{Command Execution and Shell Interaction}
 Standard utilities and anonymous pipes were executed at the xv6 interactive shell prompt:
 
 \begin{lstlisting}[language=bash]
@@ -202,20 +207,39 @@ wc
 
 \begin{figure}[H]
 \centering
-\caption{Figure 2.2 -- Directory listing, utility execution, and pipe chaining in xv6}
+\caption{Figure 3.1 -- Directory listing, utility execution, and pipe chaining in xv6}
 \end{figure}
 
-\section{Analysis and Observations}
+\section{Answers to Required Observation Questions}
 \begin{enumerate}
-    \item \textbf{Output formatting of \texttt{ls}:} Unlike GNU \texttt{ls}, the xv6 utility prints four columns: name, file type (1 for directory, 2 for regular file), inode number, and file size in bytes.
-    \item \textbf{Pipe operation:} The command \texttt{ls | grep c} illustrates Unix stream composition: the shell forks two processes, creates an anonymous pipe via the \texttt{pipe()} system call, redirects \texttt{stdout} of \texttt{ls} to the write end, redirects \texttt{stdin} of \texttt{grep} to the read end, and lets data stream concurrently.
+    \item \textbf{Three programs xv6 ships with:}
+    As evidenced by the directory listing produced by \texttt{ls}, xv6 ships out-of-the-box with fundamental Unix tools including:
+    \begin{itemize}
+        \item \texttt{ls} (file listing utility displaying type, inode number, and size);
+        \item \texttt{cat} (file concatenation and output stream reader);
+        \item \texttt{echo} (argument echo utility).
+    \end{itemize}
+    Additional tools include \texttt{grep}, \texttt{wc}, \texttt{mkdir}, \texttt{rm}, and \texttt{kill}.
+    
+    \item \textbf{OS features required for pipes (\texttt{ls | grep c}):}
+    For a pipeline command such as \texttt{ls | grep c} to execute correctly, the operating system must provide two foundational capabilities:
+    \begin{itemize}
+        \item \textbf{Isolated Concurrent Processes:} The kernel must support multitasking via process abstraction and address space isolation (\texttt{fork()}). The shell spawns two child processes that execute concurrently rather than sequentially.
+        \item \textbf{Inter-Process Communication (IPC) via Pipes and Descriptor Redirection:} The kernel must supply an IPC buffer mechanism (\texttt{pipe()}) allocated in kernel memory, along with descriptor table remapping primitives (\texttt{dup()} and \texttt{close()}). The write end of the pipe replaces file descriptor 1 (\texttt{stdout}) of the producer process (\texttt{ls}), and the read end replaces file descriptor 0 (\texttt{stdin}) of the consumer process (\texttt{grep}).
+    \end{itemize}
+
+    \item \textbf{Comparison of xv6 Shell and Modern Linux Shell:}
+    \begin{itemize}
+        \item \textbf{Shared Philosophy:} Both shells adhere to the classic Unix design: modular programs composed through byte streams, process creation via \texttt{fork} and \texttt{exec}, and standard I/O redirection (\texttt{<}, \texttt{>}, \texttt{|}).
+        \item \textbf{Differences in Complexity:} The xv6 shell (\texttt{user/sh.c}) is intentionally compact (under 500 lines of code) to demonstrate core OS primitives. Unlike Linux shells (such as Bash or Zsh), the xv6 shell lacks environment variable expansion (e.g., \texttt{\$PATH}, \texttt{\$HOME}), command line history, tab completion, job control (\texttt{Ctrl+Z}, background jobs \texttt{\&}), aliases, globbing wildcards (\texttt{*.c}), and complex programming constructs (loops, conditionals, functions).
+    \end{itemize}
 \end{enumerate}
 
 % ------------------ CHAPTER 4 ------------------
 \chapter{PART 3: READING THE SOURCE CODE}
 
-\section{Inspection of Userland Source Files}
-The source code of \texttt{user/cat.c} and system call bindings were analyzed:
+\section{Inspection of Userland Source Code (\texttt{user/cat.c})}
+The source code of \texttt{user/cat.c} was examined to observe how unprivileged user programs request kernel services:
 
 \begin{lstlisting}[language=c]
 // user/cat.c
@@ -266,13 +290,14 @@ main(int argc, char *argv[])
 
 \begin{figure}[H]
 \centering
-\caption{Figure 2.3 -- The complete implementation of user/cat.c in xv6}
+\caption{Figure 4.1 -- Implementation of user/cat.c in xv6}
 \end{figure}
 
+\section{System Call Definitions and Table Mappings}
 System call declarations and dispatcher numbers were inspected in \texttt{user/user.h} and \texttt{kernel/syscall.h}:
 
 \begin{lstlisting}[language=c]
-// user/user.h (system call prototypes)
+// user/user.h (system call prototypes available to userland)
 int read(int, void*, int);
 int write(int, const void*, int);
 int open(const char*, int);
@@ -282,11 +307,11 @@ int exit(int) __attribute__((noreturn));
 
 \begin{figure}[H]
 \centering
-\caption{Figure 2.4 -- System call prototypes in user/user.h}
+\caption{Figure 4.2 -- System call prototypes in user/user.h}
 \end{figure}
 
 \begin{lstlisting}[language=c]
-// kernel/syscall.h (system call indices)
+// kernel/syscall.h (system call identifiers)
 #define SYS_fork    1
 #define SYS_exit    2
 #define SYS_wait    3
@@ -312,20 +337,135 @@ int exit(int) __attribute__((noreturn));
 
 \begin{figure}[H]
 \centering
-\caption{Figure 2.5 -- Numeric system call vector mapping in kernel/syscall.h}
+\caption{Figure 4.3 -- Numeric system call vector mapping in kernel/syscall.h}
 \end{figure}
 
-\section{Analysis and Observations}
+\section{Answers to Required Observation Questions}
 \begin{enumerate}
-    \item \textbf{System calls utilized by \texttt{cat.c}:} The program relies on \texttt{open()}, \texttt{read()}, \texttt{write()}, \texttt{close()}, and \texttt{exit()}.
-    \item \textbf{Absence of dynamic memory allocation:} \texttt{cat.c} allocates zero heap memory via \texttt{malloc()} or \texttt{sbrk()}. It relies on a static fixed-size buffer (\texttt{char buf[512]}), ensuring minimal memory footprint and zero allocation failure modes.
-    \item \textbf{Mechanism of user-to-kernel transition:} When \texttt{read()} is invoked in userland, the auto-generated assembly stub in \texttt{user/usys.S} loads the constant \texttt{SYS\_read} (value 5) into register \texttt{a7} and executes the RISC-V \texttt{ecall} instruction. The CPU transitions into supervisor mode, traps into \texttt{kernel/syscall.c}, which indexes the system call jump table to invoke \texttt{sys\_read()} in \texttt{kernel/sysfile.c}.
+    \item \textbf{System calls utilized by \texttt{cat.c}:}
+    Inspection of \texttt{cat.c} reveals the explicit invocation of five system calls:
+    \begin{itemize}
+        \item \texttt{open(path, mode)} --- opens input files for reading;
+        \item \texttt{read(fd, buf, size)} --- reads data chunks up to 512 bytes;
+        \item \texttt{write(1, buf, n)} --- outputs read buffers to standard output (or descriptor 2 for errors);
+        \item \texttt{close(fd)} --- closes the file descriptor upon EOF;
+        \item \texttt{exit(status)} --- terminates execution cleanly.
+    \end{itemize}
+
+    \item \textbf{Kernel location of \texttt{sys\_read}:}
+    The kernel implementation of \texttt{sys\_read} is located in:
+    \begin{itemize}
+        \item \textbf{File:} \texttt{kernel/sysfile.c}
+        \item \textbf{Exact Line:} Line 69:
+    \end{itemize}
+    \begin{lstlisting}[language=c]
+    uint64
+    sys_read(void)
+    {
+      struct file *f;
+      int n;
+      uint64 p;
+
+      argfd(0, 0, &f);
+      argaddr(1, &p);
+      argint(2, &n);
+      return fileread(f, p, n);
+    }
+    \end{lstlisting}
+    This function unmarshals user parameters from trapframe registers via \texttt{argfd}, \texttt{argaddr}, and \texttt{argint}, validates pointer safety, and delegates the read operation to \texttt{fileread()}.
+
+    \item \textbf{Structural and Privilege Separation Between \texttt{kernel/} and \texttt{user/}:}
+    \begin{itemize}
+        \item \textbf{Hardware Privilege Levels:} The code in \texttt{kernel/} executes in RISC-V **Supervisor Mode**, granting it access to privileged control registers (CSRs such as \texttt{sstatus}, \texttt{satp}, \texttt{stvec}), page table manipulation, device MMIO, and interrupt control. In contrast, code in \texttt{user/} executes in RISC-V **User Mode** and is restricted to its own virtual address space.
+        \item \textbf{Transition Boundary:} User code cannot invoke kernel functions directly. It must execute an assembly stub generated in \texttt{user/usys.S}, which loads the syscall constant into register \texttt{a7} and triggers an \texttt{ecall} instruction. The hardware raises an environment call trap, transitioning the CPU to supervisor mode where \texttt{kernel/syscall.c} dispatches the request.
+    \end{itemize}
 \end{enumerate}
 
 % ------------------ CHAPTER 5 ------------------
-\chapter{CONCLUSIONS}
-In this laboratory work, the architecture of the xv6-riscv educational operating system was investigated through environment deployment, execution testing, and source code inspection.
+\chapter{PART 4: IMPLEMENTING THE SLEEP UTILITY}
 
-Booting xv6 in QEMU confirmed how an operating system initializes multi-core processor contexts and establishes userland execution with a clean terminal prompt. Interacting with basic commands demonstrated that fundamental Unix abstractions---including standard streams, descriptor redirection, anonymous pipes, and hierarchical namespaces---operate identically in xv6 and production Linux despite vast differences in code size. Finally, inspecting \texttt{user/cat.c}, \texttt{user/user.h}, and \texttt{kernel/syscall.h} clarified the complete lifecycle of a system call trap from userland execution down to kernel service routines.
+\section{Implementation of \texttt{user/sleep.c}}
+In accordance with the lab specifications, a custom userland utility \texttt{sleep} was implemented. The utility accepts a single argument specifying the duration in clock ticks, pauses the calling process, and terminates:
+
+\begin{lstlisting}[language=c]
+// user/sleep.c
+#include "kernel/types.h"
+#include "user/user.h"
+
+int
+main(int argc, char *argv[])
+{
+  if(argc != 2) {
+    fprintf(2, "usage: sleep <ticks>\n");
+    exit(1);
+  }
+  pause(atoi(argv[1])); // xv6 sleep/pause system call
+  exit(0);
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 5.1 -- Source code of user/sleep.c}
+\end{figure}
+
+\section{Makefile Configuration and Build Integration}
+To enable compilation and include \texttt{sleep} within the generated disk image (\texttt{fs.img}), \texttt{\$U/\_sleep\textbackslash} was registered in the \texttt{UPROGS} list in the xv6 \texttt{Makefile}:
+
+\begin{lstlisting}[language=make]
+UPROGS=\
+    $U/_cat\
+    $U/_echo\
+    $U/_forktest\
+    $U/_grep\
+    $U/_init\
+    $U/_kill\
+    $U/_ln\
+    $U/_ls\
+    $U/_mkdir\
+    $U/_rm\
+    $U/_sh\
+    $U/_stressfs\
+    $U/_usertests\
+    $U/_grind\
+    $U/_wc\
+    $U/_zombie\
+    $U/_sleep\
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 5.2 -- Integration of user/sleep into the xv6 Makefile}
+\end{figure}
+
+\section{Verification and Execution Output}
+The operating system was recompiled and launched in QEMU to verify utility behavior under correct invocation and erroneous parameter input:
+
+\begin{lstlisting}[language=bash]
+$ make qemu
+...
+xv6 kernel is booting
+init: starting sh
+
+$ sleep 20
+# Process pauses for 20 timer ticks (approx. 2 seconds) and returns prompt
+
+$ sleep
+usage: sleep <ticks>
+$ 
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 5.3 -- Interactive verification of sleep utility inside xv6}
+\end{figure}
+
+% ------------------ CHAPTER 6 ------------------
+\chapter{CONCLUSIONS}
+In this laboratory work, the architecture of the xv6-riscv educational operating system was investigated through environment deployment, execution testing, source code inspection, and utility implementation.
+
+Booting xv6 in QEMU confirmed how an operating system initializes multi-core processor contexts and establishes userland execution with a clean terminal prompt. Interacting with basic commands demonstrated that fundamental Unix abstractions---including standard streams, descriptor redirection, anonymous pipes, and hierarchical namespaces---operate identically in xv6 and production Linux despite vast differences in code size. 
+
+Inspecting \texttt{user/cat.c}, \texttt{user/user.h}, and \texttt{kernel/syscall.h} clarified the complete lifecycle of a system call trap from userland execution down to kernel service routines, specifically pinpointing \texttt{sys\_read} in \texttt{kernel/sysfile.c}. Finally, the implementation and integration of the \texttt{sleep} utility in \texttt{user/sleep.c} validated the workflow of extending the xv6 userland with custom software utilities.
 
 \end{document}
