@@ -1,0 +1,111 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!50!black}\itshape
+}
+
+\title{\textbf{Lucrare de Laborator Nr. 9}\\ \large Watching System Calls with strace\\ \small Sisteme de Operare (FCIM / FAF UTM)}
+\author{\textbf{Student:} Vasilean Vitalie \\ \textbf{Grupa:} FAF-231}
+\date{Semestrul V, Anul Universitar 2026--2027}
+
+\begin{document}
+
+\maketitle
+
+\section{Obiectivele Lucrării}
+\begin{itemize}
+    \item Interceptarea și analiza apelurilor de sistem generate de utilitarele din spațiul utilizator (user-space) către nucleul Linux (kernel-space) prin intermediul utilitarului \texttt{strace}.
+    \item Înțelegerea demarcației între funcțiile de bibliotecă din spațiul utilizator (\texttt{printf}) și apelurile de sistem primare puse la dispoziție de kernel (\texttt{open}, \texttt{write}, \texttt{read}, \texttt{close}).
+    \item Analiza convențiilor POSIX privind alocarea descriptorilor de fișiere la nivel de proces.
+\end{itemize}
+
+\section{Desfășurarea Lucrării}
+
+\subsection{Partea 1: Monitorizarea comenzii \texttt{ls -l}}
+S-a executat comanda \texttt{ls -l} sub supravegherea utilitarului \texttt{strace}, filtrând apelurile de sistem legate de descriptori și transfer de date:
+\begin{lstlisting}[language=bash]
+strace -f -e trace=openat,read,write,close ls -l
+\end{lstlisting}
+
+\noindent \textbf{Răspunsuri la observațiile din cerință:}
+\begin{enumerate}
+    \item \textbf{Apelul de sistem utilizat pentru afișare:} Utilitarul \texttt{ls} utilizează apelul de sistem \texttt{write} pentru a direcționa textul formatat către terminal:
+    \begin{lstlisting}
+write(1, "total 28\ndrwxrwxr-x ...", 385) = 385
+    \end{lstlisting}
+    \item \textbf{Descriptorul de fișier scris:} Descriptorul utilizat este \textbf{1}, reprezentând ieșirea standard (\texttt{stdout}).
+\end{enumerate}
+
+\subsection{Partea 2: Apeluri directe către nucleu (\texttt{syscalls.c})}
+S-a implementat programul \texttt{syscalls.c} ce interacționează cu nucleul exclusiv prin apeluri de sistem directe:
+
+\begin{lstlisting}[language=C]
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdio.h>
+
+int main(void) {
+    const char *msg = "hello, kernel\n";
+
+    int fd = open("note.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) { perror("open"); return 1; }
+    printf("open returned descriptor %d\n", fd);
+
+    ssize_t n = write(fd, msg, strlen(msg));
+    printf("write sent %zd bytes\n", n);
+    close(fd);
+
+    fd = open("note.txt", O_RDONLY);
+    if (fd < 0) { perror("open"); return 1; }
+    char buf[64];
+    n = read(fd, buf, sizeof(buf) - 1);
+    if (n >= 0) { buf[n] = '\0'; }
+    printf("read got %zd bytes: %s", n, buf);
+    close(fd);
+
+    return 0;
+}
+\end{lstlisting}
+
+\noindent La execuția sub \texttt{strace -e trace=openat,write,read,close ./syscalls}, s-au obținut următoarele linii specifice:
+\begin{lstlisting}
+openat(AT_FDCWD, "note.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3
+write(1, "open returned descriptor 3\n", 27) = 27
+write(3, "hello, kernel\n", 14) = 14
+write(1, "write sent 14 bytes\n", 20) = 20
+close(3) = 0
+openat(AT_FDCWD, "note.txt", O_RDONLY) = 3
+read(3, "hello, kernel\n", 63) = 14
+write(1, "read got 14 bytes: hello, kernel\n", 33) = 33
+close(3) = 0
+\end{lstlisting}
+
+\noindent \textbf{Răspuns la observația din cerință:}
+\begin{itemize}
+    \item \textbf{De ce descriptorul returnat la prima deschidere este 3, și nu 0, 1 sau 2?}  
+    Conform standardelor POSIX, la inițializarea oricărui proces nou, nucleul alocă automat primii trei descriptori:
+    \begin{itemize}
+        \item \texttt{0} -- \texttt{stdin} (Standard Input)
+        \item \texttt{1} -- \texttt{stdout} (Standard Output)
+        \item \texttt{2} -- \texttt{stderr} (Standard Error)
+    \end{itemize}
+    Algoritmul nucleului returnează întotdeauna cel mai mic index întreg pozitiv disponibil în tabela de descriptori a procesului. Fiind ocupate pozițiile 0, 1 și 2, prima operațiune \texttt{open} primește descriptorul \textbf{3}.
+\end{itemize}
+
+\section{Concluzie}
+Laboratorul 9 a evidențiat mecanismul practic prin care instrucțiunile din spațiul utilizator interacționează cu nucleul Linux. S-a demonstrat că apelurile din biblioteca C (\texttt{printf}) sunt straturi superioare care apelează în final servicii de sistem (\texttt{write}), iar alocarea resurselor este izolată și controlată strict de către nucleu.
+
+\end{document}

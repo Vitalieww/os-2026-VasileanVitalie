@@ -1,0 +1,118 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    breaklines=true,
+    showstringspaces=false,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!50!black}\itshape
+}
+
+\title{\textbf{Lucrare de Laborator Nr. 10}\\ \large Add Your Own System Call: trace\\ \small Sisteme de Operare (FCIM / FAF UTM)}
+\author{\textbf{Student:} Vasilean Vitalie \\ \textbf{Grupa:} FAF-231}
+\date{Semestrul V, Anul Universitar 2026--2027}
+
+\begin{document}
+
+\maketitle
+
+\section{Obiectivele Lucrării}
+\begin{itemize}
+    \item Implementarea unui nou apel de sistem în nucleul sistemului de operare xv6-riscv: \texttt{SYS\_trace} (cu identificatorul numeric \texttt{23}).
+    \item Urmărirea parcursului unui apel de sistem: invocarea din spațiul utilizator, trecerea prin instrucțiunea de mașină \texttt{ecall}, captura stării în \texttt{trapframe}, dispecerizarea în nucleu și execuția handler-ului asociat.
+    \item Interceptarea apelurilor efectuate de procese și filtrarea lor pe baza unei măști pe biți (\texttt{trace\_mask}).
+    \item Asigurarea moștenirii corecte a configurației de urmărire de către procesele descendente create prin \texttt{fork}.
+\end{itemize}
+
+\section{Implementarea Arhitecturală}
+
+\subsection{1. Componenta User-Space}
+\begin{enumerate}
+    \item \textbf{Alocarea numărului apelului (\texttt{kernel/syscall.h}):}  
+    S-a definit constanta:
+    \begin{lstlisting}[language=C]
+#define SYS_trace 23
+    \end{lstlisting}
+    \item \textbf{Declarația funcției (\texttt{user/user.h}):}  
+    S-a adăugat prototipul: \texttt{int trace(int);}.
+    \item \textbf{Generarea stub-ului assembly (\texttt{user/usys.pl}):}  
+    S-a înregistrat macrocomanda \texttt{entry("trace");}, care generează secvența RISC-V: \texttt{li a7, SYS\_trace; ecall; ret;}.
+    \item \textbf{Utilitarul utilizator (\texttt{user/trace.c}):}  
+    S-a creat utilitarul care citește masca transmisă ca prim argument, o aplică prin apelul \texttt{trace(atoi(argv[1]))} și execută comanda țintă prin \texttt{exec(argv[2], argv + 2)}.
+    \item \textbf{Înregistrarea pe disc (\texttt{Makefile}):}  
+    S-a adăugat intrarea \texttt{\$U/\_trace\textbackslash} în lista \texttt{UPROGS}.
+\end{enumerate}
+
+\subsection{2. Componenta Kernel-Space}
+\begin{enumerate}
+    \item \textbf{Extinderea contextului procesului (\texttt{kernel/proc.h}):}  
+    S-a adăugat câmpul \texttt{int trace\_mask;} în cadrul structurii \texttt{struct proc}.
+    \item \textbf{Handler-ul de sistem (\texttt{kernel/sysproc.c}):}  
+    S-a implementat funcția \texttt{sys\_trace(void)} care preia argumentul din registrul \texttt{a0} prin \texttt{argint(0, \&mask)} și îl stochează în \texttt{myproc()->trace\_mask}.
+    \item \textbf{Tabela de dispecerizare (\texttt{kernel/syscall.c}):}  
+    S-a adăugat declarația \texttt{extern uint64 sys\_trace(void);}, intrarea \texttt{[SYS\_trace] = sys\_trace} în vectorul \texttt{syscalls[]}, și denumirile literale în vectorul \texttt{syscallnames[]}.
+    \item \textbf{Interceptarea apelurilor (\texttt{kernel/syscall.c}):}  
+    În funcția nucleu \texttt{syscall()}, imediat după apelarea funcției corespunzătoare și salvarea valorii de retur în \texttt{trapframe->a0}, s-a adăugat verificarea măștii:
+    \begin{lstlisting}[language=C]
+p->trapframe->a0 = syscalls[num]();
+if ((p->trace_mask >> num) & 1) {
+    printk("%d: syscall %s -> %ld\n",
+           p->pid, syscallnames[num], p->trapframe->a0);
+}
+    \end{lstlisting}
+    \item \textbf{Moștenirea la apelul \texttt{fork} (\texttt{kernel/proc.c}):}  
+    Pentru ca procesele copil să fie urmărite în continuare, în corpul funcției \texttt{fork()} s-a adăugat:
+    \begin{lstlisting}[language=C]
+safestrcpy(np->name, p->name, sizeof(p->name));
+np->trace_mask = p->trace_mask;
+    \end{lstlisting}
+\end{enumerate}
+
+\section{Rezultate Experimentale și Analiză}
+
+\subsection{Verificarea inițială (Check 2)}
+La rularea comenzii \texttt{trace 32 grep hello README}, sistemul a afișat:
+\begin{lstlisting}
+3: syscall read -> 1023
+3: syscall read -> 965
+3: syscall read -> 453
+3: syscall read -> 0
+\end{lstlisting}
+Suma octeților ($1023 + 965 + 453 = 2441$) reprezintă dimensiunea exactă a fișierului \texttt{README}, urmată de returul \texttt{0} ce semnalează \textit{End of File} (EOF).
+
+\subsection{Analiza măștii de urmărire (Partea 3)}
+\begin{enumerate}
+    \item \textbf{De ce în \texttt{trace 32 grep hello README} se afișează doar apelurile \texttt{read}?}\\
+    Valoarea $32$ este egală cu $2^5$. În reprezentare binară, doar bitul corespunzător indexului 5 (\texttt{SYS\_read}) este setat pe 1. Verificarea \texttt{(p->trace\_mask >> num) \& 1} este evaluată ca fiind adevărată strict pentru \texttt{num = 5}. Operațiile \texttt{open} (bit 15) și \texttt{close} (bit 21) sunt filtrate.
+
+    \item \textbf{Care linie de cod din Partea 2 permite afișarea apelurilor pentru PID-uri distincte în testul \texttt{forkforkfork}?}\\
+    Linia adăugată în funcția \texttt{fork()} din \texttt{kernel/proc.c}:
+    \begin{lstlisting}[language=C]
+np->trace_mask = p->trace_mask;
+    \end{lstlisting}
+    Aceasta transferă starea măștii procesului părinte în spațiul noului proces creat.
+
+    \item \textbf{De ce mesajul de trace apare intercalat între ``hi'' și caracterul linie nouă în \texttt{trace 65536 echo hi}?}\\
+    Valoarea $65536 = 2^{16}$ activează urmărirea pentru \texttt{SYS\_write}. Programul \texttt{echo} execută două apeluri de sistem consecutive:
+    \begin{itemize}
+        \item Primul apel: \texttt{write(1, "hi", 2)} trimite textul util. Nucleul afișează imediat mesajul de interceptare: \texttt{66: syscall write -> 2}.
+        \item Al doilea apel: \texttt{write(1, "\textbackslash n", 1)} trimite sfârșitul de linie, declanșând: \texttt{66: syscall write -> 1}.
+    \end{itemize}
+
+    \item \textbf{Calculul măștii pentru interceptarea exclusivă a apelurilor \texttt{open} (15) și \texttt{close} (21):}\\
+    \[
+    \text{Masca} = 2^{15} + 2^{21} = 32768 + 2097152 = \mathbf{2129920}
+    \]
+\end{enumerate}
+
+\section{Concluzie}
+Prin adăugarea apelului de sistem \texttt{trace} a fost consolidată înțelegerea mecanismelor interne ale nucleului xv6 pe arhitectura RISC-V. S-a realizat translația instrucțiunilor între mediile neprivilegiat și privilegiat, dispatching-ul prin vectorul tabelei de apeluri, precum și propagarea atributelor per-proces în ierarhia arborelui de procese.
+
+\end{document}
