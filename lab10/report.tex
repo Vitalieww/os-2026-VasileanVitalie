@@ -1,118 +1,457 @@
-\documentclass[12pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
-\usepackage[margin=2.5cm]{geometry}
-\usepackage{listings}
-\usepackage{xcolor}
-\usepackage{booktabs}
+\documentclass[12pt,a4paper]{report}
 
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
 \lstset{
-    basicstyle=\ttfamily\small,
-    backgroundcolor=\color{gray!10},
-    frame=single,
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
     breaklines=true,
-    showstringspaces=false,
-    keywordstyle=\color{blue}\bfseries,
-    commentstyle=\color{green!50!black}\itshape
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
 }
 
-\title{\textbf{Lucrare de Laborator Nr. 10}\\ \large Add Your Own System Call: trace\\ \small Sisteme de Operare (FCIM / FAF UTM)}
-\author{\textbf{Student:} Vasilean Vitalie \\ \textbf{Grupa:} FAF-231}
-\date{Semestrul V, Anul Universitar 2026--2027}
-
+% ------------------ DOCUMENT ------------------
 \begin{document}
 
-\maketitle
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\begin{figure}[htbp]
+\centering
+\IfFileExists{img/utm_logo.png}{\includegraphics[width=0.2\textwidth]{img/utm_logo.png}}{\vspace{2cm}}
+\end{figure}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
 
-\section{Obiectivele Lucrării}
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 10\\
+Operating Systems\\
+Topic: Add Your Own System Call: trace (xv6)\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+Inside the xv6 operating system running on the 64-bit RISC-V architecture, the boundary between user applications and the kernel is guarded strictly by hardware privilege modes. User programs execute in unprivileged User Mode (U-mode), whereas kernel code executes in privileged Supervisor Mode (S-mode). When a user program requires an operating system service, it cannot jump directly to a kernel memory address; rather, it loads the requested service number into a dedicated CPU register (\texttt{a7}) and executes the RISC-V \texttt{ecall} (environment call) instruction.
+
+Implementing a custom system call provides an end-to-end understanding of how hardware trap vectors, trapframe register saving, system call table lookup, argument unmarshaling, and process control block management cooperate to service user requests safely.
+
+\section{Lab Objective}
+The primary objective of this laboratory work is to design, implement, and verify a new system call within the xv6 kernel: \texttt{SYS\_trace} (system call number 23). The specific goals comprise:
 \begin{itemize}
-    \item Implementarea unui nou apel de sistem în nucleul sistemului de operare xv6-riscv: \texttt{SYS\_trace} (cu identificatorul numeric \texttt{23}).
-    \item Urmărirea parcursului unui apel de sistem: invocarea din spațiul utilizator, trecerea prin instrucțiunea de mașină \texttt{ecall}, captura stării în \texttt{trapframe}, dispecerizarea în nucleu și execuția handler-ului asociat.
-    \item Interceptarea apelurilor efectuate de procese și filtrarea lor pe baza unei măști pe biți (\texttt{trace\_mask}).
-    \item Asigurarea moștenirii corecte a configurației de urmărire de către procesele descendente create prin \texttt{fork}.
+    \item configuring the userland interface by updating \texttt{kernel/syscall.h}, \texttt{user/user.h}, and the automated assembly stub generator \texttt{user/usys.pl};
+    \item developing the user-space diagnostic tool \texttt{user/trace.c} and registering it in the build system (\texttt{Makefile});
+    \item extending the process control block (\texttt{struct proc}) to store a per-process bitmask (\texttt{trace\_mask});
+    \item implementing the kernel service routine \texttt{sys\_trace()} in \texttt{kernel/sysproc.c} and wiring it into the dispatch jump table in \texttt{kernel/syscall.c};
+    \item intercepting system call returns and logging filtered trace messages formatted with the process PID, system call name, and return value;
+    \item ensuring that process tracing configurations inherit across the process hierarchy through \texttt{fork()};
+    \item analyzing bitwise mask configurations and evaluating interactive execution traces inside QEMU.
 \end{itemize}
 
-\section{Implementarea Arhitecturală}
+% ------------------ CHAPTER 2 ------------------
+\chapter{PART 1: SYSTEM CALL ARCHITECTURE AND USERLAND DISPATCHER}
 
-\subsection{1. Componenta User-Space}
+\section{Userland System Call Configuration}
+To establish the system call interface, definitions were added across three distinct header and generator files:
+
 \begin{enumerate}
-    \item \textbf{Alocarea numărului apelului (\texttt{kernel/syscall.h}):}  
-    S-a definit constanta:
+    \item \textbf{Numeric Syscall Identifier (\texttt{kernel/syscall.h}):}
+    A new identifier constant \texttt{SYS\_trace} was allocated with numeric value \texttt{23}:
     \begin{lstlisting}[language=C]
-#define SYS_trace 23
+    #define SYS_trace 23
     \end{lstlisting}
-    \item \textbf{Declarația funcției (\texttt{user/user.h}):}  
-    S-a adăugat prototipul: \texttt{int trace(int);}.
-    \item \textbf{Generarea stub-ului assembly (\texttt{user/usys.pl}):}  
-    S-a înregistrat macrocomanda \texttt{entry("trace");}, care generează secvența RISC-V: \texttt{li a7, SYS\_trace; ecall; ret;}.
-    \item \textbf{Utilitarul utilizator (\texttt{user/trace.c}):}  
-    S-a creat utilitarul care citește masca transmisă ca prim argument, o aplică prin apelul \texttt{trace(atoi(argv[1]))} și execută comanda țintă prin \texttt{exec(argv[2], argv + 2)}.
-    \item \textbf{Înregistrarea pe disc (\texttt{Makefile}):}  
-    S-a adăugat intrarea \texttt{\$U/\_trace\textbackslash} în lista \texttt{UPROGS}.
+
+    \item \textbf{C Function Prototype (\texttt{user/user.h}):}
+    The prototype was declared in the user-space system call interface:
+    \begin{lstlisting}[language=C]
+    int trace(int);
+    \end{lstlisting}
+
+    \item \textbf{Assembly Stub Generator (\texttt{user/usys.pl}):}
+    An entry was appended to the Perl generation script:
+    \begin{lstlisting}[language=Perl]
+    entry("trace");
+    \end{lstlisting}
+    During compilation, this emits the RISC-V machine assembly stub in \texttt{user/usys.S}:
+    \begin{lstlisting}[language={[x86masm]Assembler}]
+    .global trace
+    trace:
+     li a7, SYS_trace
+     ecall
+     ret
+    \end{lstlisting}
 \end{enumerate}
 
-\subsection{2. Componenta Kernel-Space}
-\begin{enumerate}
-    \item \textbf{Extinderea contextului procesului (\texttt{kernel/proc.h}):}  
-    S-a adăugat câmpul \texttt{int trace\_mask;} în cadrul structurii \texttt{struct proc}.
-    \item \textbf{Handler-ul de sistem (\texttt{kernel/sysproc.c}):}  
-    S-a implementat funcția \texttt{sys\_trace(void)} care preia argumentul din registrul \texttt{a0} prin \texttt{argint(0, \&mask)} și îl stochează în \texttt{myproc()->trace\_mask}.
-    \item \textbf{Tabela de dispecerizare (\texttt{kernel/syscall.c}):}  
-    S-a adăugat declarația \texttt{extern uint64 sys\_trace(void);}, intrarea \texttt{[SYS\_trace] = sys\_trace} în vectorul \texttt{syscalls[]}, și denumirile literale în vectorul \texttt{syscallnames[]}.
-    \item \textbf{Interceptarea apelurilor (\texttt{kernel/syscall.c}):}  
-    În funcția nucleu \texttt{syscall()}, imediat după apelarea funcției corespunzătoare și salvarea valorii de retur în \texttt{trapframe->a0}, s-a adăugat verificarea măștii:
-    \begin{lstlisting}[language=C]
-p->trapframe->a0 = syscalls[num]();
-if ((p->trace_mask >> num) & 1) {
-    printk("%d: syscall %s -> %ld\n",
-           p->pid, syscallnames[num], p->trapframe->a0);
+\begin{figure}[H]
+\centering
+\caption{Figure 2.1 -- Userland system call interface configuration}
+\end{figure}
+
+\section{Implementation of \texttt{user/trace.c}}
+The user program \texttt{user/trace.c} accepts a bitmask argument, activates tracing in the kernel for the calling process via \texttt{trace()}, and immediately transfers execution to the target command using \texttt{exec()}:
+
+\begin{lstlisting}[language=C]
+// user/trace.c
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+
+int
+main(int argc, char *argv[])
+{
+  if (argc < 3) {
+    fprintf(2, "usage: trace mask command [args...]\n");
+    exit(1);
+  }
+
+  if (trace(atoi(argv[1])) < 0) {
+    fprintf(2, "trace: failed\n");
+    exit(1);
+  }
+
+  exec(argv[2], argv + 2);
+  fprintf(2, "trace: exec %s failed\n", argv[2]);
+  exit(1);
 }
-    \end{lstlisting}
-    \item \textbf{Moștenirea la apelul \texttt{fork} (\texttt{kernel/proc.c}):}  
-    Pentru ca procesele copil să fie urmărite în continuare, în corpul funcției \texttt{fork()} s-a adăugat:
-    \begin{lstlisting}[language=C]
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.2 -- Source code of user/trace.c}
+\end{figure}
+
+\section{Makefile Integration}
+The user utility was registered under the \texttt{UPROGS} rule in the xv6 \texttt{Makefile} to include \texttt{\_trace} in the generated disk image (\texttt{fs.img}):
+
+\begin{lstlisting}[language=make]
+UPROGS=\
+    $U/_cat\
+    $U/_echo\
+    $U/_forktest\
+    $U/_grep\
+    $U/_init\
+    $U/_kill\
+    $U/_ln\
+    $U/_ls\
+    $U/_mkdir\
+    $U/_rm\
+    $U/_sh\
+    $U/_stressfs\
+    $U/_usertests\
+    $U/_grind\
+    $U/_wc\
+    $U/_zombie\
+    $U/_trace\
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.3 -- Registration of user/trace in the xv6 Makefile}
+\end{figure}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{PART 2: KERNEL IMPLEMENTATION OF TRACE}
+
+\section{Process Control Block Extension (\texttt{kernel/proc.h})}
+To track which system calls should be logged for any specific process, an integer field \texttt{trace\_mask} was added to \texttt{struct proc}:
+
+\begin{lstlisting}[language=C]
+// kernel/proc.h
+struct proc {
+  struct spinlock lock;
+  enum procstate state;
+  void *chan;
+  int killed;
+  int xstate;
+  int pid;
+  struct proc *parent;
+  uint64 kstack;
+  uint64 sz;
+  pagetable_t pagetable;
+  struct trapframe *trapframe;
+  struct context context;
+  struct file *ofile[NOFILE];
+  struct inode *cwd;
+  char name[16];
+  int trace_mask; // Bitmask of system calls to trace
+};
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 3.1 -- Field addition in kernel/proc.h}
+\end{figure}
+
+\section{Kernel Syscall Handler (\texttt{kernel/sysproc.c})}
+The kernel service function \texttt{sys\_trace()} retrieves the integer bitmask passed by the user from register \texttt{a0} using \texttt{argint()} and saves it into the current process descriptor:
+
+\begin{lstlisting}[language=C]
+// kernel/sysproc.c
+uint64
+sys_trace(void)
+{
+  int mask;
+  argint(0, &mask);
+  myproc()->trace_mask = mask;
+  return 0;
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 3.2 -- Implementation of sys\_trace in kernel/sysproc.c}
+\end{figure}
+
+\section{Syscall Interception and Dispatching (\texttt{kernel/syscall.c})}
+The dispatch table \texttt{syscalls[]} was updated to link \texttt{SYS\_trace} to \texttt{sys\_trace}. Additionally, a string lookup table \texttt{syscallnames[]} was created to convert numeric system call identifiers into human-readable names. 
+
+Inside the central dispatch routine \texttt{syscall()}, after invoking the system call handler and saving its return value into \texttt{trapframe->a0}, the kernel tests whether the corresponding bit in \texttt{trace\_mask} is set:
+
+\begin{lstlisting}[language=C]
+// kernel/syscall.c
+static char *syscallnames[] = {
+  [SYS_fork]    "fork",
+  [SYS_exit]    "exit",
+  [SYS_wait]    "wait",
+  [SYS_pipe]    "pipe",
+  [SYS_read]    "read",
+  [SYS_kill]    "kill",
+  [SYS_exec]    "exec",
+  [SYS_fstat]   "fstat",
+  [SYS_chdir]   "chdir",
+  [SYS_dup]     "dup",
+  [SYS_getpid]  "getpid",
+  [SYS_sbrk]    "sbrk",
+  [SYS_pause]   "pause",
+  [SYS_uptime]  "uptime",
+  [SYS_open]    "open",
+  [SYS_write]   "write",
+  [SYS_mknod]   "mknod",
+  [SYS_unlink]  "unlink",
+  [SYS_link]    "link",
+  [SYS_mkdir]   "mkdir",
+  [SYS_close]   "close",
+  [SYS_sync]    "sync",
+  [SYS_trace]   "trace",
+};
+
+void
+syscall(void)
+{
+  int num;
+  struct proc *p = myproc();
+
+  num = p->trapframe->a7;
+  if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+    p->trapframe->a0 = syscalls[num]();
+    if ((p->trace_mask >> num) & 1) {
+      printk("%d: syscall %s -> %ld\n",
+             p->pid, syscallnames[num], p->trapframe->a0);
+    }
+  } else {
+    printk("%d %s: unknown sys call %d\n", p->pid, p->name, num);
+    p->trapframe->a0 = -1;
+  }
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 3.3 -- Interceptor and table bindings in kernel/syscall.c}
+\end{figure}
+
+\section{Inheritance Across Process Creation (\texttt{kernel/proc.c})}
+To ensure that child processes created via \texttt{fork()} continue to be traced, the \texttt{trace\_mask} is copied from the parent process (\texttt{p}) to the newly allocated child process descriptor (\texttt{np}) inside \texttt{kfork()} in \texttt{kernel/proc.c}:
+
+\begin{lstlisting}[language=C]
+// kernel/proc.c (inside kfork)
 safestrcpy(np->name, p->name, sizeof(p->name));
-np->trace_mask = p->trace_mask;
-    \end{lstlisting}
-\end{enumerate}
+np->trace_mask = p->trace_mask; // Inherit parent's trace mask
+pid = np->pid;
+\end{lstlisting}
 
-\section{Rezultate Experimentale și Analiză}
+\begin{figure}[H]
+\centering
+\caption{Figure 3.4 -- Inheritance of trace mask in kernel/proc.c}
+\end{figure}
 
-\subsection{Verificarea inițială (Check 2)}
-La rularea comenzii \texttt{trace 32 grep hello README}, sistemul a afișat:
-\begin{lstlisting}
+% ------------------ CHAPTER 4 ------------------
+\chapter{PART 3: VERIFICATION AND OBSERVATIONAL ANALYSIS}
+
+\section{Experimental Testing in QEMU}
+The modified kernel was compiled and booted under QEMU to execute the diagnostic test suites:
+
+\begin{lstlisting}[language=bash]
+$ trace 32 grep hello README
 3: syscall read -> 1023
 3: syscall read -> 965
 3: syscall read -> 453
 3: syscall read -> 0
+
+$ trace 2147483647 grep hello README
+3: syscall trace -> 0
+3: syscall exec -> 0
+3: syscall open -> 3
+3: syscall read -> 1023
+3: syscall read -> 965
+3: syscall read -> 453
+3: syscall read -> 0
+3: syscall close -> 0
+
+$ trace 2 usertests forkforkfork
+...
+usertests: all tests passed
 \end{lstlisting}
-Suma octeților ($1023 + 965 + 453 = 2441$) reprezintă dimensiunea exactă a fișierului \texttt{README}, urmată de returul \texttt{0} ce semnalează \textit{End of File} (EOF).
 
-\subsection{Analiza măștii de urmărire (Partea 3)}
+\begin{figure}[H]
+\centering
+\caption{Figure 4.1 -- Interactive verification of trace system call}
+\end{figure}
+
+\section{Analysis of Verification Run (\texttt{trace 32 grep hello README})}
+During the execution of \texttt{trace 32 grep hello README}, the \texttt{read} system call is invoked four times, returning buffer lengths \texttt{1023}, \texttt{965}, \texttt{453}, and \texttt{0}.
+\begin{equation}
+\sum \text{Bytes Read} = 1023 + 965 + 453 = 2441 \text{ bytes}
+\end{equation}
+This matches the exact byte size of \texttt{README} reported by \texttt{ls} in the xv6 root filesystem (\texttt{README 2 2 2441}). The final return value of \texttt{0} represents standard POSIX End of File (EOF).
+
+\section{Answers to Required Observation Questions}
 \begin{enumerate}
-    \item \textbf{De ce în \texttt{trace 32 grep hello README} se afișează doar apelurile \texttt{read}?}\\
-    Valoarea $32$ este egală cu $2^5$. În reprezentare binară, doar bitul corespunzător indexului 5 (\texttt{SYS\_read}) este setat pe 1. Verificarea \texttt{(p->trace\_mask >> num) \& 1} este evaluată ca fiind adevărată strict pentru \texttt{num = 5}. Operațiile \texttt{open} (bit 15) și \texttt{close} (bit 21) sunt filtrate.
+    \item \textbf{Why does \texttt{trace 32 grep hello README} display only \texttt{read} calls?}  
+    The mask value $32$ corresponds to $2^5$ ($1 \ll 5$), which sets bit 5 in the bitmask. In \texttt{kernel/syscall.h}, \texttt{SYS\_read} is assigned index 5. The bitwise expression \texttt{(p->trace\_mask >> num) \& 1} evaluates to true strictly when \texttt{num == 5}. Other system calls executed by \texttt{grep} (such as \texttt{open} with index 15 and \texttt{close} with index 21) have their respective bits set to 0 and are filtered out.
 
-    \item \textbf{Care linie de cod din Partea 2 permite afișarea apelurilor pentru PID-uri distincte în testul \texttt{forkforkfork}?}\\
-    Linia adăugată în funcția \texttt{fork()} din \texttt{kernel/proc.c}:
+    \item \textbf{Which line of code enables tracing for distinct child PIDs in \texttt{forkforkfork}?}  
+    The line added to the \texttt{fork()} implementation in \texttt{kernel/proc.c}:
     \begin{lstlisting}[language=C]
-np->trace_mask = p->trace_mask;
+    np->trace_mask = p->trace_mask;
     \end{lstlisting}
-    Aceasta transferă starea măștii procesului părinte în spațiul noului proces creat.
+    This propagates the parent's tracing mask to the child's process control block. When child processes subsequently execute system calls, their calls are intercepted and printed with their respective newly assigned PIDs.
 
-    \item \textbf{De ce mesajul de trace apare intercalat între ``hi'' și caracterul linie nouă în \texttt{trace 65536 echo hi}?}\\
-    Valoarea $65536 = 2^{16}$ activează urmărirea pentru \texttt{SYS\_write}. Programul \texttt{echo} execută două apeluri de sistem consecutive:
+    \item \textbf{Why does the trace output interleave between "hi" and the newline in \texttt{trace 65536 echo hi}?}  
+    The integer $65536$ equals $2^{16}$ ($1 \ll 16$), which activates tracing for \texttt{SYS\_write} (index 16). The \texttt{echo} utility in \texttt{user/echo.c} writes its output using two separate calls:
     \begin{itemize}
-        \item Primul apel: \texttt{write(1, "hi", 2)} trimite textul util. Nucleul afișează imediat mesajul de interceptare: \texttt{66: syscall write -> 2}.
-        \item Al doilea apel: \texttt{write(1, "\textbackslash n", 1)} trimite sfârșitul de linie, declanșând: \texttt{66: syscall write -> 1}.
+        \item First call: \texttt{write(1, "hi", 2)} outputs the argument text. As soon as the call finishes, the kernel logs:
+        \begin{lstlisting}
+        hi66: syscall write -> 2
+        \end{lstlisting}
+        \item Second call: \texttt{write(1, "\textbackslash n", 1)} transmits the newline character, causing the second trace line to begin on a new terminal row:
+        \begin{lstlisting}
+        66: syscall write -> 1
+        \end{lstlisting}
     \end{itemize}
 
-    \item \textbf{Calculul măștii pentru interceptarea exclusivă a apelurilor \texttt{open} (15) și \texttt{close} (21):}\\
-    \[
-    \text{Masca} = 2^{15} + 2^{21} = 32768 + 2097152 = \mathbf{2129920}
-    \]
+    \item \textbf{Mask Calculation for Intercepting Exclusively \texttt{open} (15) and \texttt{close} (21):}  
+    To monitor exclusively \texttt{open} and \texttt{close}, bits 15 and 21 must be set:
+    \begin{equation}
+    \text{Mask} = 2^{15} + 2^{21} = 32768 + 2097152 = \mathbf{2129920}
+    \end{equation}
+    Verification command:
+    \begin{lstlisting}[language=bash]
+    $ trace 2129920 grep hello README
+    3: syscall open -> 3
+    3: syscall close -> 0
+    \end{lstlisting}
 \end{enumerate}
 
-\section{Concluzie}
-Prin adăugarea apelului de sistem \texttt{trace} a fost consolidată înțelegerea mecanismelor interne ale nucleului xv6 pe arhitectura RISC-V. S-a realizat translația instrucțiunilor între mediile neprivilegiat și privilegiat, dispatching-ul prin vectorul tabelei de apeluri, precum și propagarea atributelor per-proces în ierarhia arborelui de procese.
+% ------------------ CHAPTER 5 ------------------
+\chapter{CONCLUSIONS}
+In this laboratory work, a custom system call (\texttt{SYS\_trace}) was engineered and integrated into the xv6-riscv operating system.
+
+The implementation spanned all levels of the system call hierarchy: userland stub generation in \texttt{usys.pl}, trap instruction execution via \texttt{ecall}, parameter unmarshaling from trapframe registers via \texttt{argint()}, kernel process descriptor state management in \texttt{struct proc}, and trap return logging in \texttt{kernel/syscall.c}. Furthermore, configuring process inheritance in \texttt{kernel/proc.c} ensured that tracing persists seamlessly across process fork trees.
+
+This work solidified theoretical principles of hardware privilege isolation, trap dispatching, and kernel state propagation in a functional multi-core operating system.
+
+% ------------------ REFERENCES ------------------
+\chapter*{REFERENCES}
+\addcontentsline{toc}{chapter}{REFERENCES}
+
+\noindent [1] Russ Cox, Frans Kaashoek, and Robert Morris, \textit{xv6: a simple, Unix-like teaching operating system}, MIT CSAIL, 2024.
+
+\noindent [2] Andrew S. Tanenbaum and Herbert Bos, \textit{Modern Operating Systems}, Pearson, 4th Edition, 2014.
+
+\noindent [3] David A. Patterson and John L. Hennessy, \textit{Computer Organization and Design RISC-V Edition: The Hardware Software Interface}, Morgan Kaufmann, 2nd Edition, 2020.
+
+\noindent [4] Department of Software Engineering and Automation, \textit{Operating Systems Lab 10: Add Your Own System Call: trace}, FCIM, Technical University of Moldova, 2026.
 
 \end{document}

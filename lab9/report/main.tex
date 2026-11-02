@@ -1,0 +1,303 @@
+\documentclass[12pt,a4paper]{report}
+
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
+\lstset{
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
+}
+
+% ------------------ DOCUMENT ------------------
+\begin{document}
+
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\begin{figure}[htbp]
+\centering
+\IfFileExists{img/utm_logo.png}{\includegraphics[width=0.2\textwidth]{img/utm_logo.png}}{\vspace{2cm}}
+\end{figure}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
+
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 9\\
+Operating Systems\\
+Topic: Watching System Calls with strace\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+In modern operating systems adhering to the POSIX specification, user applications execute within unprivileged CPU rings (Ring 3 on x86\_64) and are isolated from direct hardware interaction by hardware memory management units (MMUs). Any interaction with peripheral storage, terminal consoles, or IPC pipes requires crossing the hardware privilege boundary into kernel space (Ring 0) via standardized system calls.
+
+While high-level programming interfaces provide abstract wrappers (such as \texttt{printf}, \texttt{fopen}, and \texttt{fread} in the C standard library), these routines ultimately decompose into fundamental kernel system calls (\texttt{openat}, \texttt{write}, \texttt{read}, \texttt{close}). The \texttt{strace} diagnostic utility leverages the Linux kernel's \texttt{ptrace} debugging interface to intercept, decode, and log every system call issued by a process, providing complete transparency into the runtime user-kernel dialogue.
+
+\section{Lab Objective}
+The primary objective of this laboratory work is to inspect and analyze the low-level system call interface of Linux using \texttt{strace}. Specifically, the work covers:
+\begin{itemize}
+    \item tracing the execution of standard GNU utilities (\texttt{ls -l}) and identifying exact system calls responsible for directory examination and terminal output;
+    \item developing a standalone C program (\texttt{syscalls.c}) that interacts directly with the kernel using core POSIX file descriptor system calls (\texttt{open}, \texttt{write}, \texttt{read}, \texttt{close});
+    \item evaluating the POSIX file descriptor allocation policy and explaining why initial open operations return descriptor \texttt{3};
+    \item analyzing the relationship between user-space buffering libraries (\texttt{printf}) and kernel-level output routines (\texttt{write}).
+\end{itemize}
+
+% ------------------ CHAPTER 2 ------------------
+\chapter{PART 1: MONITORING COMMAND EXECUTION WITH STRACE}
+
+\section{Tracing the \texttt{ls -l} Utility}
+The standard directory listing utility \texttt{ls -l} was executed under \texttt{strace}, filtering for system calls associated with descriptor manipulation and data transmission:
+
+\begin{lstlisting}[language=bash]
+$ strace -f -e trace=openat,read,write,close ls -l
+close(3)                                = 0
+openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+close(3)                                = 0
+openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0>\0\1\0\0\0P\237\2\0\0\0\0\0"..., 832) = 832
+close(3)                                = 0
+openat(AT_FDCWD, ".", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+close(3)                                = 0
+write(1, "total 28\n-rw-rw-r-- 1 vitalie vi"..., 385) = 385
+close(1)                                = 0
+close(2)                                = 0
++++ exited with 0 +++
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.1 -- Selective system call trace of ls -l under strace}
+\end{figure}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{System Call Used to Display Text:}
+    The \texttt{ls} utility employs the \textbf{\texttt{write}} system call to transmit formatted directory listings to the terminal console:
+    \begin{lstlisting}[language=bash]
+    write(1, "total 28\n-rw-rw-r-- 1 vitalie vi"..., 385) = 385
+    \end{lstlisting}
+    Before writing, \texttt{ls} opens the directory stream via \texttt{openat(AT\_FDCWD, ".", ...)} and queries directory content records using the \texttt{getdents64} system call.
+
+    \item \textbf{File Descriptor Passed to \texttt{write}:}
+    The file descriptor number passed to the call is \textbf{\texttt{1}}, representing standard output (\textbf{\texttt{stdout}}).
+\end{enumerate}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{PART 2: DIRECT SYSTEM CALL INTERFACES}
+
+\section{Implementation of \texttt{syscalls.c}}
+To contrast high-level library abstractions with direct kernel interfaces, the program \texttt{syscalls.c} was implemented. The application performs file creation, byte writing, file reopening, and data reading using low-level POSIX primitives:
+
+\begin{lstlisting}[language=C]
+// syscalls.c - open, write, read and close using POSIX system calls
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdio.h>
+
+int main(void) {
+    const char *msg = "hello, kernel\n";
+
+    // open() is a system call: requests a file from the kernel, returns descriptor
+    int fd = open("note.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) { 
+        perror("open"); 
+        return 1; 
+    }
+    printf("open returned descriptor %d\n", fd);
+
+    // write() is a system call: transfers bytes into kernel buffer cache
+    ssize_t n = write(fd, msg, strlen(msg));
+    printf("write sent %zd bytes\n", n);
+    close(fd);
+
+    // read it back through the kernel
+    fd = open("note.txt", O_RDONLY);
+    if (fd < 0) { 
+        perror("open"); 
+        return 1; 
+    }
+    char buf[64];
+    n = read(fd, buf, sizeof(buf) - 1);
+    if (n >= 0) {
+        buf[n] = '\0';
+    }
+    printf("read got %zd bytes: %s", n, buf);
+    close(fd);
+
+    return 0;
+}
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 3.1 -- Source code of syscalls.c}
+\end{figure}
+
+\section{Execution and System Call Trace Verification}
+The application was compiled using GCC with strict error checking and executed under \texttt{strace}:
+
+\begin{lstlisting}[language=bash]
+$ gcc -Wall -Werror -o syscalls syscalls.c
+$ strace -e trace=openat,write,read,close ./syscalls
+openat(AT_FDCWD, "note.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3
+write(1, "open returned descriptor 3\n", 27) = 27
+write(3, "hello, kernel\n", 14)           = 14
+write(1, "write sent 14 bytes\n", 20)      = 20
+close(3)                                = 0
+openat(AT_FDCWD, "note.txt", O_RDONLY)  = 3
+read(3, "hello, kernel\n", 63)          = 14
+write(1, "read got 14 bytes: hello, kernel\n", 33) = 33
+close(3)                                = 0
++++ exited with 0 +++
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 3.2 -- Intercepted system call trace for ./syscalls}
+\end{figure}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{File Descriptor Allocation Mechanics (Why Descriptor 3?):}
+    \begin{itemize}
+        \item Under POSIX operating systems, every process is initialized with three pre-allocated standard streams:
+        \begin{itemize}
+            \item \texttt{0} --- Standard Input (\texttt{stdin});
+            \item \texttt{1} --- Standard Output (\texttt{stdout});
+            \item \texttt{2} --- Standard Error (\texttt{stderr}).
+        \end{itemize}
+        \item The Linux kernel follows a strict **lowest-available-index allocation policy** for process file descriptor tables (\texttt{struct files\_struct}). When \texttt{open()} is invoked, the kernel scans the table starting from index 0 and assigns the first free numerical slot.
+        \item Since slots 0, 1, and 2 are already assigned to terminal descriptors upon process initialization, the first available index is **\texttt{3}**.
+        \item When \texttt{close(3)} is called, slot 3 is released. Consequently, the subsequent \texttt{open("note.txt", O\_RDONLY)} reallocates slot **\texttt{3}**.
+    \end{itemize}
+
+    \item \textbf{Relationship Between \texttt{printf()} and \texttt{write()}:}
+    \begin{itemize}
+        \item \texttt{printf()} is a user-space library function implemented in the C runtime library (\texttt{glibc}). It provides string formatting and user-space memory buffering.
+        \item \texttt{write()} is the underlying kernel system call that transfers raw bytes across the user-kernel privilege boundary.
+        \item As seen in Figure 3.2, calling \texttt{printf("open returned descriptor 3\textbackslash n", fd)} does not execute in kernel space directly; instead, \texttt{glibc} formats the string into a buffer and immediately invokes \texttt{write(1, "open returned descriptor 3\textbackslash n", 27)} to flush the line to descriptor 1.
+    \end{itemize}
+\end{enumerate}
+
+% ------------------ CHAPTER 4 ------------------
+\chapter{ANALYSIS OF KERNEL-USER BOUNDARIES}
+
+\section{System Call Dispatching Architecture}
+On the x86\_64 Linux architecture, the transition from unprivileged userland to privileged kernel mode proceeds through the \texttt{syscall} machine instruction:
+\begin{enumerate}
+    \item \textbf{Register Setup:} User-space wrappers load the system call number into register \texttt{rax} (e.g., \texttt{rax = 1} for \texttt{SYS\_write}, \texttt{rax = 257} for \texttt{SYS\_openat}). Call parameters are loaded sequentially into registers \texttt{rdi}, \texttt{rsi}, \texttt{rdx}, \texttt{r10}, \texttt{r8}, and \texttt{r9}.
+    \item \textbf{Privilege Transition:} The CPU executes the \texttt{syscall} instruction. The hardware transitions from Ring 3 to Ring 0, saves the instruction pointer into \texttt{rcx}, and jumps to the kernel entry point recorded in the Model Specific Register \texttt{IA32\_LSTAR}.
+    \item \textbf{Dispatcher Execution:} The kernel entry stub pushes user registers to the kernel stack, checks the system call number against the architecture jump table (\texttt{sys\_call\_table}), and executes the corresponding service routine (such as \texttt{ksys\_write()}).
+    \item \textbf{Return to Userland:} Upon completing the request, the return value or negative error code is placed into \texttt{rax}, and the \texttt{sysretq} instruction restores user-space execution.
+\end{enumerate}
+
+\section{The Role of \texttt{strace} and \texttt{ptrace}}
+The \texttt{strace} utility attaches to the target process using the \texttt{ptrace(PTRACE\_SYSCALL, ...)} primitive. The kernel suspends the traced process twice per system call: once immediately before syscall entry (allowing inspection of arguments), and once immediately following syscall exit (allowing inspection of return values). This architecture ensures that every transition is captured without altering application source code.
+
+% ------------------ CHAPTER 5 ------------------
+\chapter{CONCLUSIONS}
+In this laboratory work, the low-level communication interface between user-space applications and the Linux kernel was analyzed using the \texttt{strace} diagnostic utility.
+
+Executing \texttt{ls -l} under syscall interception demonstrated that standard utilities depend on basic kernel primitives (\texttt{openat}, \texttt{getdents64}, \texttt{write}) for resource discovery and data rendering. Developing \texttt{syscalls.c} confirmed that file descriptor allocations follow a deterministic lowest-index policy starting at descriptor \texttt{3}, and demonstrated that standard formatting functions (\texttt{printf}) are user-space abstractions that delegate directly to \texttt{write()}. 
+
+The experiment highlighted the structural separation of privilege rings, reinforcing the role of the operating system kernel as the sole arbitrator of hardware resources.
+
+% ------------------ REFERENCES ------------------
+\chapter*{REFERENCES}
+\addcontentsline{toc}{chapter}{REFERENCES}
+
+\noindent [1] Michael Kerrisk, \textit{The Linux Programming Interface: A Linux and UNIX System Programming Handbook}, No Starch Press, 2010.
+
+\noindent [2] Robert Love, \textit{Linux System Programming: Talking Directly to the Kernel and C Library}, O'Reilly Media, 2nd Edition, 2013.
+
+\noindent [3] W. Richard Stevens and Stephen A. Rago, \textit{Advanced Programming in the UNIX Environment}, Addison-Wesley Professional, 3rd Edition, 2013.
+
+\noindent [4] Department of Software Engineering and Automation, \textit{Operating Systems Lab 9: Watching System Calls with strace}, FCIM, Technical University of Moldova, 2026.
+
+\end{document}
+
