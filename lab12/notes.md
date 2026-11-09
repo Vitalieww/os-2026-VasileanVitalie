@@ -168,3 +168,4 @@ exit code: 0
 3. **Fix the program: change only thread two so it takes the locks in the same order as thread one (A, then B). Run it again. Does it finish now?**
    - **Yes**, the fixed program runs cleanly to completion in 2 seconds and prints `done` with exit code `0`.
    - By enforcing a strict global lock ordering ($A \prec B$), circular wait is mathematically broken (Coffman condition violated), preventing deadlock entirely.
+

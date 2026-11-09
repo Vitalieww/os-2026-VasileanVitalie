@@ -128,3 +128,4 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
    - If the calling process entered `sleep()` while continuing to hold `s->lock`, no other process could ever acquire `s->lock`.
    - Specifically, any partner process attempting to execute `sem_up(id)` would block indefinitely attempting to acquire `s->lock` at line 71.
    - As a consequence, `wakeup(s)` could never be called, and the sleeping process could never be awakened. The entire system would enter an unrecoverable kernel deadlock. Releasing `s->lock` inside the sleep window (after `sleep_prepare(s)` has registered the wait channel) ensures other CPUs can access the semaphore to signal `sem_up`.
+

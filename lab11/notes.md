@@ -166,3 +166,4 @@ user    0m0.034s
 sys     0m0.000s
 ```
 - **Analysis:** Atomic hardware instructions (`lock incq` / `lock xaddq` on x86_64) guarantee indivisible read-modify-write operations at the memory bus/cache level without incurring the overhead of thread sleep, wake queues, or kernel futex transitions, executing over $4\times$ faster than mutexes while guaranteeing absolute correctness.
+

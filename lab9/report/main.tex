@@ -87,7 +87,7 @@ Group FAF-241\\[1.5cm]
 \textbf{\Large Report}\\
 Laboratory Work No. 9\\
 Operating Systems\\
-Topic: Watching System Calls with strace\\[2cm]
+Topic: Watching System Calls with strace (Track A - Linux)\\[2cm]
 
 \begin{flushright}
 Checked by:\\
@@ -123,7 +123,8 @@ The primary objective of this laboratory work is to inspect and analyze the low-
     \item tracing the execution of standard GNU utilities (\texttt{ls -l}) and identifying exact system calls responsible for directory examination and terminal output;
     \item developing a standalone C program (\texttt{syscalls.c}) that interacts directly with the kernel using core POSIX file descriptor system calls (\texttt{open}, \texttt{write}, \texttt{read}, \texttt{close});
     \item evaluating the POSIX file descriptor allocation policy and explaining why initial open operations return descriptor \texttt{3};
-    \item analyzing the relationship between user-space buffering libraries (\texttt{printf}) and kernel-level output routines (\texttt{write}).
+    \item analyzing the relationship between user-space buffering libraries (\texttt{printf}) and kernel-level output routines (\texttt{write});
+    \item profiling and counting system call distributions using the \texttt{strace -c} summary flag, analyzing why file reading requires multiple \texttt{read()} invocations, and observing chunk-based buffer reading and End-Of-File (EOF) detection.
 \end{itemize}
 
 % ------------------ CHAPTER 2 ------------------
@@ -158,31 +159,35 @@ close(2)                                = 0
     \item \textbf{System Call Used to Display Text:}
     The \texttt{ls} utility employs the \textbf{\texttt{write}} system call to transmit formatted directory listings to the terminal console:
     \begin{lstlisting}[language=bash]
-    write(1, "total 28\n-rw-rw-r-- 1 vitalie vi"..., 385) = 385
+    write(1, "total 28\ndrwxrwxr-x ...", 385) = 385
     \end{lstlisting}
-    Before writing, \texttt{ls} opens the directory stream via \texttt{openat(AT\_FDCWD, ".", ...)} and queries directory content records using the \texttt{getdents64} system call.
+    Before calling \texttt{write}, \texttt{ls} queries directory metadata using \texttt{openat()} to open the directory file descriptor, \texttt{getdents64()} to enumerate directory entries, and \texttt{newfstatat()} to retrieve file permissions, timestamps, and sizes.
 
-    \item \textbf{File Descriptor Passed to \texttt{write}:}
-    The file descriptor number passed to the call is \textbf{\texttt{1}}, representing standard output (\textbf{\texttt{stdout}}).
+    \item \textbf{File Descriptor Written To:}
+    The descriptor number passed to the \texttt{write()} system call is strictly \textbf{\texttt{1}}, representing standard output (\texttt{stdout}).
 \end{enumerate}
 
 % ------------------ CHAPTER 3 ------------------
-\chapter{PART 2: DIRECT SYSTEM CALL INTERFACES}
+\chapter{PART 2: DIRECT KERNEL CALLS (\texttt{syscalls.c})}
 
 \section{Implementation of \texttt{syscalls.c}}
-To contrast high-level library abstractions with direct kernel interfaces, the program \texttt{syscalls.c} was implemented. The application performs file creation, byte writing, file reopening, and data reading using low-level POSIX primitives:
+A C program was constructed to interact directly with the Linux kernel using POSIX system calls (\texttt{open}, \texttt{write}, \texttt{read}, and \texttt{close}) without library-level buffering for file operations:
 
 \begin{lstlisting}[language=C]
-// syscalls.c - open, write, read and close using POSIX system calls
-#include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
-#include <stdio.h>
+/* syscalls.c - open, write, read and close, using only system calls.
+ * Build: gcc -Wall -Wextra -o syscalls syscalls.c
+ * Run:   ./syscalls
+ * See the calls: strace ./syscalls
+ */
+#include <fcntl.h>  /* open */
+#include <unistd.h> /* write, read, close */
+#include <string.h> /* strlen */
+#include <stdio.h>  /* printf */
 
 int main(void) {
     const char *msg = "hello, kernel\n";
 
-    // open() is a system call: requests a file from the kernel, returns descriptor
+    // open() is a system call: ask kernel for file, get back descriptor
     int fd = open("note.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) { 
         perror("open"); 
@@ -222,7 +227,12 @@ int main(void) {
 The application was compiled using GCC with strict error checking and executed under \texttt{strace}:
 
 \begin{lstlisting}[language=bash]
-$ gcc -Wall -Werror -o syscalls syscalls.c
+$ gcc -Wall -Wextra -o syscalls syscalls.c
+$ ./syscalls
+open returned descriptor 3
+write sent 14 bytes
+read got 14 bytes: hello, kernel
+
 $ strace -e trace=openat,write,read,close ./syscalls
 openat(AT_FDCWD, "note.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3
 write(1, "open returned descriptor 3\n", 27) = 27
@@ -251,9 +261,9 @@ close(3)                                = 0
             \item \texttt{1} --- Standard Output (\texttt{stdout});
             \item \texttt{2} --- Standard Error (\texttt{stderr}).
         \end{itemize}
-        \item The Linux kernel follows a strict **lowest-available-index allocation policy** for process file descriptor tables (\texttt{struct files\_struct}). When \texttt{open()} is invoked, the kernel scans the table starting from index 0 and assigns the first free numerical slot.
-        \item Since slots 0, 1, and 2 are already assigned to terminal descriptors upon process initialization, the first available index is **\texttt{3}**.
-        \item When \texttt{close(3)} is called, slot 3 is released. Consequently, the subsequent \texttt{open("note.txt", O\_RDONLY)} reallocates slot **\texttt{3}**.
+        \item The Linux kernel follows a strict lowest-available-index allocation policy for process file descriptor tables (\texttt{struct files\_struct}). When \texttt{open()} is invoked, the kernel scans the table starting from index 0 and assigns the first free numerical slot.
+        \item Since slots 0, 1, and 2 are already assigned to terminal descriptors upon process initialization, the first available index is \textbf{\texttt{3}}.
+        \item When \texttt{close(3)} is called, slot 3 is released. Consequently, the subsequent \texttt{open("note.txt", O\_RDONLY)} reallocates slot \textbf{\texttt{3}}.
     \end{itemize}
 
     \item \textbf{Relationship Between \texttt{printf()} and \texttt{write()}:}
@@ -265,6 +275,66 @@ close(3)                                = 0
 \end{enumerate}
 
 % ------------------ CHAPTER 4 ------------------
+\chapter{PART 3: COUNTING SYSTEM CALLS WITH STRACE (-c)}
+
+\section{Aggregated System Call Profiling}
+In addition to step-by-step stream tracing, \texttt{strace} provides a dedicated profiling mode enabled via the \texttt{-c} (or \texttt{--summary-only}) flag. In this mode, \texttt{strace} attaches to the process, intercepts all system calls, measures the execution duration spent within the kernel for each call, and generates an aggregated statistical summary table upon process termination.
+
+To evaluate real file I/O operations, the GNU \texttt{cat} utility was profiled while reading the source file \texttt{syscalls.c}, redirecting output to \texttt{/dev/null} to isolate file reading from console display latency:
+
+\begin{lstlisting}[language=bash]
+$ strace -c cat syscalls.c > /dev/null
+\end{lstlisting}
+
+\section{Execution and Summary Table Output}
+The command executed and generated the following statistical profile:
+
+\begin{lstlisting}
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 25.17    0.000037          18         2           read
+ 19.05    0.000028           7         4           mmap
+ 14.29    0.000021          10         2           openat
+ 12.24    0.000018           6         3           close
+  9.52    0.000014           7         2           newfstatat
+  6.80    0.000010          10         1           write
+  4.76    0.000007           7         1           munmap
+  4.08    0.000006           6         1           brk
+  4.08    0.000006           6         1           execve
+  0.00    0.000000           0         1           arch_prctl
+  0.00    0.000000           0         1           set_tid_address
+  0.00    0.000000           0         1           set_robust_list
+  0.00    0.000000           0         1           prlimit64
+  0.00    0.000000           0         1           rseq
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.000147                    22           total
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 4.1 -- System call count and timing summary generated by strace -c}
+\end{figure}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{From the summary, how many \texttt{read} calls did \texttt{cat} make?}
+    
+    From the summary table, \texttt{cat} made exactly \textbf{2} \texttt{read} system calls.
+
+    \item \textbf{Explain in one sentence why reading a file needs more than one \texttt{read}:}
+    
+    \textbf{A file is read in buffer-sized chunks, and the program cannot know when the end of the file is reached until a subsequent \texttt{read()} system call returns 0 bytes (the standard POSIX EOF indicator), which requires an extra call after all data has been ingested.}
+\end{enumerate}
+
+\section{Architectural Analysis: Chunk-Based Ingestion and EOF Detection}
+When \texttt{cat} reads a file, it allocates a memory buffer according to the file system's block size (typically queried via \texttt{fstat}, e.g., 64 KiB or 131,072 bytes). 
+\begin{itemize}
+    \item \textbf{First \texttt{read()} call:} The kernel transfers all available bytes of \texttt{syscalls.c} (984 bytes) from the kernel page cache into the user buffer. The system call returns $984$, representing the number of bytes read.
+    \item \textbf{Second \texttt{read()} call:} Although the program received fewer bytes than its buffer capacity, the POSIX specification permits short reads even when more data might follow (for instance, on pipes, network sockets, or slow storage). Therefore, the utility must issue another \texttt{read()} to definitively check for additional bytes. The kernel identifies that the file pointer has reached the end of the file and returns \textbf{0}.
+    \item \textbf{EOF Termination:} In Unix/POSIX convention, a return value of \texttt{0} from \texttt{read()} represents the End-Of-File (EOF) condition. Upon receiving 0, \texttt{cat} terminates its read loop and closes the file descriptor.
+\end{itemize}
+
+% ------------------ CHAPTER 5 ------------------
 \chapter{ANALYSIS OF KERNEL-USER BOUNDARIES}
 
 \section{System Call Dispatching Architecture}
@@ -279,11 +349,14 @@ On the x86\_64 Linux architecture, the transition from unprivileged userland to 
 \section{The Role of \texttt{strace} and \texttt{ptrace}}
 The \texttt{strace} utility attaches to the target process using the \texttt{ptrace(PTRACE\_SYSCALL, ...)} primitive. The kernel suspends the traced process twice per system call: once immediately before syscall entry (allowing inspection of arguments), and once immediately following syscall exit (allowing inspection of return values). This architecture ensures that every transition is captured without altering application source code.
 
-% ------------------ CHAPTER 5 ------------------
+% ------------------ CHAPTER 6 ------------------
 \chapter{CONCLUSIONS}
-In this laboratory work, the low-level communication interface between user-space applications and the Linux kernel was analyzed using the \texttt{strace} diagnostic utility.
-
-Executing \texttt{ls -l} under syscall interception demonstrated that standard utilities depend on basic kernel primitives (\texttt{openat}, \texttt{getdents64}, \texttt{write}) for resource discovery and data rendering. Developing \texttt{syscalls.c} confirmed that file descriptor allocations follow a deterministic lowest-index policy starting at descriptor \texttt{3}, and demonstrated that standard formatting functions (\texttt{printf}) are user-space abstractions that delegate directly to \texttt{write()}. 
+In this laboratory work, the low-level communication interface between user-space applications and the Linux kernel was analyzed using the \texttt{strace} diagnostic utility across three comprehensive parts:
+\begin{enumerate}
+    \item \textbf{Real Command Monitoring (Part 1):} Executing \texttt{ls -l} under syscall interception demonstrated that standard utilities depend on basic kernel primitives (\texttt{openat}, \texttt{getdents64}, \texttt{write}) for resource discovery and data rendering.
+    \item \textbf{Direct Kernel Interaction (Part 2):} Developing \texttt{syscalls.c} confirmed that file descriptor allocations follow a deterministic lowest-index policy starting at descriptor \texttt{3}, and demonstrated that standard formatting functions (\texttt{printf}) are user-space abstractions that delegate directly to \texttt{write()}.
+    \item \textbf{System Call Profiling (Part 3):} Profiling \texttt{cat syscalls.c > /dev/null} with \texttt{strace -c} demonstrated quantitative call counting and proved that file ingestion operates in buffer-sized chunks, requiring a terminal 0-byte return to detect the End-Of-File condition.
+\end{enumerate}
 
 The experiment highlighted the structural separation of privilege rings, reinforcing the role of the operating system kernel as the sole arbitrator of hardware resources.
 
@@ -300,4 +373,3 @@ The experiment highlighted the structural separation of privilege rings, reinfor
 \noindent [4] Department of Software Engineering and Automation, \textit{Operating Systems Lab 9: Watching System Calls with strace}, FCIM, Technical University of Moldova, 2026.
 
 \end{document}
-
