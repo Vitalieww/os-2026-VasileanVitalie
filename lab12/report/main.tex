@@ -1,0 +1,569 @@
+\documentclass[12pt,a4paper]{report}
+
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
+\lstset{
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
+}
+
+% ------------------ DOCUMENT ------------------
+\begin{document}
+
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\begin{figure}[htbp]
+\centering
+\IfFileExists{img/utm_logo.png}{\includegraphics[width=0.2\textwidth]{img/utm_logo.png}}{\vspace{2cm}}
+\end{figure}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
+
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 12\\
+Operating Systems\\
+Topic: Producer, Consumer and the Other Tools (Track A - Linux)\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+In concurrent system architectures, inter-thread coordination extends far beyond basic mutual exclusion around simple variables. Real-world operating systems and multi-threaded applications rely on classic coordination paradigms to manage pipelines, stream buffers, asymmetric data access, and asynchronous event notifications.
+
+Four archetypal synchronization patterns constitute the foundation of concurrent software engineering:
+\begin{enumerate}
+    \item \textbf{The Bounded-Buffer (Producer-Consumer) Problem:} Coordinating concurrent threads that produce and consume data items through a fixed-capacity ring buffer without buffer overflow or underflow.
+    \item \textbf{Condition Variables:} Providing efficient, stateless synchronization that allows threads to suspend execution until a complex predicate becomes true, avoiding wasteful CPU busy-waiting (spinning).
+    \item \textbf{The Readers-Writers Problem:} Managing asymmetric concurrent access to shared data structures where multiple readers may safely inspect data simultaneously, but writers demand strict mutual exclusion.
+    \item \textbf{Deadlock Detection and Prevention:} Analyzing the four Coffman conditions that lead to permanent system freezes, and enforcing strict global resource hierarchies to eliminate circular waits.
+\end{enumerate}
+
+\section{Laboratory Objectives}
+The specific goals of this laboratory work include:
+\begin{itemize}
+    \item Implementing Dijkstra's two-semaphore and mutex solution for the bounded-buffer problem (\texttt{prodcons.c}) and analyzing thread synchronization under asymmetric producer/consumer speeds.
+    \item Exploring POSIX condition variables (\texttt{pthread\_cond\_wait}, \texttt{pthread\_cond\_signal}) in \texttt{condvar.c}, contrasting their stateless nature with stateful semaphores, and analyzing why loop re-evaluation (\texttt{while}) is mandatory under Mesa semantics.
+    \item Implementing the reader-preference Readers-Writers algorithm (\texttt{readers.c}) using dual semaphores, and evaluating the problem of writer starvation.
+    \item Reproducing deterministic circular deadlock (\texttt{deadlock.c}), modeling the deadlock with a Resource Allocation Graph (RAG), and applying a global lock hierarchy to eliminate deadlocks.
+\end{itemize}
+
+% ------------------ CHAPTER 2 ------------------
+\chapter{PART 1: THE PRODUCER-CONSUMER PROBLEM}
+
+\section{Program Implementation (\texttt{prodcons.c})}
+The bounded-buffer model utilizes a circular array of size $N=4$ carrying $M=8$ sequential integer items. Synchronization is coordinated via two counting semaphores and one mutual exclusion lock:
+\begin{itemize}
+    \item \texttt{sem\_t empty}: Initialized to $SIZE = 4$, tracking available empty slots.
+    \item \texttt{sem\_t full}: Initialized to $0$, tracking populated slots ready for extraction.
+    \item \texttt{pthread\_mutex\_t lock}: Serializes updates to buffer indices (\texttt{in}, \texttt{out}) and counter variables.
+\end{itemize}
+
+\begin{lstlisting}[language=C]
+/* prodcons.c - producer and consumer around a buffer of 4 slots. */
+#include <stdio.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
+
+#define SIZE 4
+#define ITEMS 8
+
+int buf[SIZE];
+int in = 0, out = 0, count = 0;
+
+sem_t empty, full;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+void *producer(void *arg) {
+    for (int item = 1; item <= ITEMS; item++) {
+        sem_wait(&empty); /* block if buffer is full */
+        pthread_mutex_lock(&lock);
+        buf[in] = item;
+        in = (in + 1) % SIZE;
+        count++;
+        printf("put %d (in buffer: %d)\n", item, count);
+        pthread_mutex_unlock(&lock);
+        sem_post(&full); /* signal new available item */
+    }
+    return NULL;
+}
+
+void *consumer(void *arg) {
+    for (int k = 0; k < ITEMS; k++) {
+        sem_wait(&full); /* block if buffer is empty */
+        pthread_mutex_lock(&lock);
+        int item = buf[out];
+        out = (out + 1) % SIZE;
+        count--;
+        printf("      take %d (in buffer: %d)\n", item, count);
+        pthread_mutex_unlock(&lock);
+        sem_post(&empty); /* signal free slot */
+        usleep(300000);   /* slow consumer simulation */
+    }
+    return NULL;
+}
+
+int main(void) {
+    sem_init(&empty, 0, SIZE);
+    sem_init(&full, 0, 0);
+    pthread_t p, c;
+    pthread_create(&c, NULL, consumer, NULL);
+    pthread_create(&p, NULL, producer, NULL);
+    pthread_join(p, NULL);
+    pthread_join(c, NULL);
+    sem_destroy(&empty);
+    sem_destroy(&full);
+    return 0;
+}
+\end{lstlisting}
+
+\section{Execution and Trace Output}
+\begin{lstlisting}[language=bash]
+$ gcc -Wall -pthread -o prodcons prodcons.c
+$ ./prodcons
+put 1 (in buffer: 1)
+put 2 (in buffer: 2)
+put 3 (in buffer: 3)
+put 4 (in buffer: 4)
+      take 1 (in buffer: 3)
+put 5 (in buffer: 4)
+      take 2 (in buffer: 3)
+put 6 (in buffer: 4)
+      take 3 (in buffer: 3)
+put 7 (in buffer: 4)
+      take 4 (in buffer: 3)
+put 8 (in buffer: 4)
+      take 5 (in buffer: 3)
+      take 6 (in buffer: 2)
+      take 7 (in buffer: 1)
+      take 8 (in buffer: 0)
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 2.1 -- Bounded-buffer execution trace showing producer throttled at capacity 4}
+\end{figure}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{In \texttt{prodcons.c}, which call makes the producer stop when the buffer is full?}
+    
+    The invocation of \textbf{\texttt{sem\_wait(\&empty);}} at line 21. 
+    When the producer rapidly outputs items 1 through 4 while the consumer sleeps, the initial 4 permits in \texttt{empty} are decremented to 0. When the producer loops to item 5, calling \texttt{sem\_wait(\&empty)} on a semaphore whose value is 0 immediately blocks the producer thread. The producer remains suspended until the consumer removes item 1 and calls \texttt{sem\_post(\&empty)}.
+
+    \item \textbf{When the program starts, does the consumer run first or does it wait? Which line makes it do that?}
+    
+    The consumer \textbf{waits} (blocks) immediately at startup.
+    The line responsible is \textbf{\texttt{sem\_wait(\&full);}} at line 35. 
+    Because the semaphore \texttt{full} is initialized to $0$ in \texttt{main()}, attempting to decrement it blocks the consumer until the producer inserts the first item and signals completion via \texttt{sem\_post(\&full)}.
+
+    \item \textbf{What would happen if the producer locked the mutex BEFORE calling \texttt{sem\_wait(\&empty)}?}
+    
+    This would cause an immediate, catastrophic \textbf{Deadlock}:
+    \begin{enumerate}
+        \item When the buffer fills up ($count = 4$, $empty = 0$), the producer would execute \texttt{pthread\_mutex\_lock(\&lock)} and acquire the mutex.
+        \item The producer then calls \texttt{sem\_wait(\&empty)}. Because $empty = 0$, the producer is put to sleep by the kernel \textit{while continuing to hold \texttt{lock}}.
+        \item The consumer attempts to process items to free up slots. However, the consumer must execute \texttt{pthread\_mutex\_lock(\&lock)} before extracting data.
+        \item Because the producer holds the mutex, the consumer blocks waiting for \texttt{lock}.
+        \item The producer is waiting for the consumer to increment \texttt{empty}, while the consumer is waiting for the producer to release \texttt{lock}. Neither thread can proceed.
+    \end{enumerate}
+    This demonstrates the fundamental rule of synchronization: \textbf{never block on a semaphore while holding a mutex needed by the signaling thread}.
+\end{enumerate}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{PART 2: CONDITION VARIABLES}
+
+\section{Program Implementation (\texttt{condvar.c})}
+POSIX condition variables allow threads to sleep until a specific application condition is met. In \texttt{condvar.c}, the signaling problem from Lab 11 is re-implemented using a mutex, a condition variable, and an explicit boolean condition flag:
+
+\begin{lstlisting}[language=C]
+/* condvar.c - thread signaling via mutex and condition variable */
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+
+char message[32];
+int ready = 0; /* explicit condition state */
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
+
+void *writer(void *arg) {
+    sleep(1);
+    pthread_mutex_lock(&lock);
+    strcpy(message, "hello");
+    ready = 1; /* update condition predicate */
+    printf("A: message written\n");
+    pthread_cond_signal(&changed); /* wake waiting reader */
+    pthread_mutex_unlock(&lock);
+    return NULL;
+}
+
+void *reader(void *arg) {
+    pthread_mutex_lock(&lock);
+    while (!ready) { /* loop re-check predicate */
+        printf("B: not ready, I sleep\n");
+        pthread_cond_wait(&changed, &lock); /* atomically unlock & sleep */
+    }
+    printf("B: I read \"%s\"\n", message);
+    pthread_mutex_unlock(&lock);
+    return NULL;
+}
+\end{lstlisting}
+
+\section{Execution Trace}
+\begin{lstlisting}[language=bash]
+$ gcc -Wall -pthread -o condvar condvar.c
+$ ./condvar
+B: not ready, I sleep
+A: message written
+B: I read "hello"
+\end{lstlisting}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{Which variable remembers that the message is ready?}
+    
+    The user-level variable \textbf{\texttt{int ready}}.
+    A condition variable itself possesses \textbf{no internal memory or counter}. If \texttt{pthread\_cond\_signal()} is dispatched when no thread is actively blocked inside \texttt{pthread\_cond\_wait()}, the signal vanishes permanently. Therefore, the application state must be explicitly preserved in a program variable (\texttt{ready}), protected by the associated mutex.
+
+    \item \textbf{In \texttt{reader()}, replace \texttt{while (!ready)} with \texttt{if (!ready)}. Does it still work?}
+    
+    \textbf{Yes}, in this simple single-producer, single-consumer program, replacing \texttt{while} with \texttt{if} still functions correctly. Because there is only one reader thread and no competing threads modifying \texttt{ready}, when the reader is awakened by the writer, \texttt{ready} is guaranteed to be $1$.
+
+    \item \textbf{Why does POSIX recommend \texttt{while} instead of \texttt{if}?}
+    
+    POSIX systems and modern operating system kernels follow \textbf{Mesa Monitor Semantics}, necessitating a \texttt{while} loop for two primary reasons:
+    \begin{itemize}
+        \item \textbf{Spurious Wakeups:} Under Linux and Unix kernels, \texttt{pthread\_cond\_wait()} can legally unblock and return even when no thread has signaled the condition variable. This can occur due to signal deliveries, kernel futex internal wakeups, or multiprocessing race resolutions.
+        \item \textbf{Multi-Consumer Races:} In systems with multiple waiting threads, signaling with \texttt{pthread\_cond\_broadcast()} or waking multiple consumers means that another thread might acquire the mutex first, process the item, and reset \texttt{ready = 0}. When the second thread eventually re-acquires the mutex, the condition is no longer satisfied. The \texttt{while} loop forces the thread to re-verify the predicate before proceeding.
+    \end{itemize}
+\end{enumerate}
+
+% ------------------ CHAPTER 4 ------------------
+\chapter{PART 3: THE READERS-WRITERS PROBLEM}
+
+\section{Program Implementation (\texttt{readers.c})}
+The Readers-Writers problem coordinates concurrent access to shared data where read operations can occur simultaneously, but write operations require exclusive access:
+\begin{itemize}
+    \item \texttt{sem\_t room}: Initialized to 1, acts as an exclusive lock on the shared memory room.
+    \item \texttt{sem\_t rlock}: Initialized to 1, protects updates to the active reader counter \texttt{readers}.
+\end{itemize}
+
+\begin{lstlisting}[language=C]
+/* readers.c - multiple concurrent readers, exclusive writers */
+#include <stdio.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
+
+#define READERS 3
+#define WRITERS 2
+
+int value = 0;
+int readers = 0;
+sem_t rlock; /* protects readers counter */
+sem_t room;  /* 1 = room free for a writer */
+
+void *reader(void *arg) {
+    long id = (long)arg;
+
+    sem_wait(&rlock);
+    if (++readers == 1)
+        sem_wait(&room); /* first reader claims the room */
+    sem_post(&rlock);
+
+    printf("reader %ld reads %d (readers inside: %d)\n", id, value, readers);
+    usleep(200000);
+
+    sem_wait(&rlock);
+    if (--readers == 0)
+        sem_post(&room); /* last reader releases the room */
+    sem_post(&rlock);
+    return NULL;
+}
+
+void *writer(void *arg) {
+    long id = (long)arg;
+    sem_wait(&room); /* exclusive access */
+    value += 10;
+    printf("writer %ld writes %d (alone)\n", id, value);
+    usleep(200000);
+    sem_post(&room);
+    return NULL;
+}
+\end{lstlisting}
+
+\section{Execution Trace}
+\begin{lstlisting}[language=bash]
+$ gcc -Wall -pthread -o readers readers.c
+$ ./readers
+writer 1 writes 10 (alone)
+reader 1 reads 10 (readers inside: 1)
+reader 2 reads 10 (readers inside: 2)
+reader 3 reads 10 (readers inside: 3)
+writer 2 writes 20 (alone)
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 4.1 -- Concurrent readers executing together while writers execute in isolation}
+\end{figure}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{Which two lines allow multiple readers to read at the same time?}
+    
+    The entry and exit threshold checks:
+    \begin{itemize}
+        \item Entry check (Line 22): \texttt{if (++readers == 1) sem\_wait(\&room);}
+        \item Exit check (Line 30): \texttt{if (--readers == 0) sem\_post(\&room);}
+    \end{itemize}
+    Only the very first reader that enters performs \texttt{sem\_wait(\&room)}, locking out writers. Subsequent readers increment \texttt{readers} and bypass the semaphore entirely, entering concurrently. When leaving, intermediate readers simply decrement the counter; only the final reader out calls \texttt{sem\_post(\&room)}, relinquishing the room back to waiting writers.
+
+    \item \textbf{Why does the \texttt{readers} counter need its own lock \texttt{rlock}?}
+    
+    The operations \texttt{++readers} and \texttt{--readers} are non-atomic read-modify-write sequences. If multiple reader threads arrive simultaneously without \texttt{rlock}, a race condition on \texttt{readers} could lead to two threads both seeing \texttt{readers == 1} and attempting to acquire \texttt{room} twice, or a missed decrement where \texttt{readers} never reaches 0, causing waiting writers to be permanently locked out.
+
+    \item \textbf{What happens if readers keep arriving one after another, with no gap?}
+    
+    \textbf{Writer Starvation:}
+    This implementation favors readers. If new reader threads arrive before previous readers have departed, the active count \texttt{readers} remains strictly $\ge 1$. Consequently, \texttt{sem\_post(\&room)} is never called, and any waiting writer threads remain indefinitely blocked in the kernel queue, completely starved of execution time.
+\end{enumerate}
+
+% ------------------ CHAPTER 5 ------------------
+\chapter{PART 4: DEADLOCK DETECTION AND PREVENTION}
+
+\section{Deadlock Analysis and Coffman Conditions}
+A deadlock occurs when a set of concurrent processes are permanently blocked because each process holds a resource and waits for another resource held by another process. For a deadlock to occur, four Coffman conditions must hold simultaneously:
+\begin{enumerate}
+    \item \textbf{Mutual Exclusion:} Resources cannot be shared simultaneously.
+    \item \textbf{Hold and Wait:} Processes hold allocated resources while requesting new ones.
+    \item \textbf{No Preemption:} Resources cannot be forcibly revoked from holding processes.
+    \item \textbf{Circular Wait:} A closed chain of processes exists where each process waits for a resource held by the next.
+\end{enumerate}
+
+\section{The Deadlock Program and Inverted Lock Ordering}
+In the uncorrected version of \texttt{deadlock.c}, Thread \texttt{one} requests Mutex A then Mutex B, while Thread \texttt{two} requests Mutex B then Mutex A:
+
+\begin{lstlisting}[language=C]
+/* deadlock_bug.c - buggy inverted locking order */
+void *one(void *arg) {
+    pthread_mutex_lock(&A);
+    printf("one: I have A, I want B\n");
+    sleep(1);
+    pthread_mutex_lock(&B); /* blocks waiting for B */
+    ...
+}
+
+void *two(void *arg) {
+    pthread_mutex_lock(&B);
+    printf("two: I have B, I want A\n");
+    sleep(1);
+    pthread_mutex_lock(&A); /* blocks waiting for A */
+    ...
+}
+\end{lstlisting}
+
+When compiled and monitored with the GNU \texttt{timeout} command, the program hangs permanently until terminated by the watchdog timer:
+\begin{lstlisting}[language=bash]
+$ gcc -Wall -pthread -o deadlock_bug deadlock_bug.c
+$ timeout 4 ./deadlock_bug
+one: I have A, I want B
+two: I have B, I want A
+$ echo "exit code: $?"
+exit code: 124
+\end{lstlisting}
+Exit code 124 confirms that the program was forcibly killed after 4 seconds of deadlock.
+
+\section{The Corrected Program (\texttt{deadlock.c})}
+To eliminate circular wait, a strict global lock hierarchy ($A \prec B$) was established. Thread \texttt{two} was modified to acquire Mutex A first, followed by Mutex B:
+
+\begin{lstlisting}[language=C]
+/* deadlock.c - fixed: both threads lock A first, then B */
+#include <stdio.h>
+#include <unistd.h>
+#include <pthread.h>
+
+pthread_mutex_t A = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t B = PTHREAD_MUTEX_INITIALIZER;
+
+void *one(void *arg) {
+    pthread_mutex_lock(&A);
+    printf("one: I have A, I want B\n");
+    sleep(1);
+    pthread_mutex_lock(&B);
+    printf("one: I have both\n");
+    pthread_mutex_unlock(&B);
+    pthread_mutex_unlock(&A);
+    return NULL;
+}
+
+void *two(void *arg) {
+    pthread_mutex_lock(&A); /* same order as thread one */
+    printf("two: I have A, I want B\n");
+    sleep(1);
+    pthread_mutex_lock(&B);
+    printf("two: I have both\n");
+    pthread_mutex_unlock(&B);
+    pthread_mutex_unlock(&A);
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t1, t2;
+    pthread_create(&t1, NULL, one, NULL);
+    pthread_create(&t2, NULL, two, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    printf("done\n");
+    return 0;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash]
+$ gcc -Wall -pthread -o deadlock deadlock.c
+$ timeout 4 ./deadlock
+one: I have A, I want B
+one: I have both
+two: I have A, I want B
+two: I have both
+done
+$ echo "exit code: $?"
+exit code: 0
+\end{lstlisting}
+
+\section{Answers to Required Observation Questions}
+\begin{enumerate}
+    \item \textbf{Draw the wait circle on paper: thread one holds ..., wants ...; thread two holds ..., wants ...:}
+    
+    The Resource Allocation Graph (RAG) forms a closed directed cycle:
+    \begin{equation}
+    \text{Thread 1} \xrightarrow{\text{holds}} \text{Lock A} \xleftarrow{\text{wants}} \text{Thread 2} \xrightarrow{\text{holds}} \text{Lock B} \xleftarrow{\text{wants}} \text{Thread 1}
+    \end{equation}
+    In graphical circular wait representation:
+    \begin{center}
+    $\text{Thread 1} \longrightarrow \text{requests Lock B} \longrightarrow \text{held by Thread 2} \longrightarrow \text{requests Lock A} \longrightarrow \text{held by Thread 1}$
+    \end{center}
+    Because neither thread can proceed without the other releasing its held resource, both threads enter an unresolvable circular wait.
+
+    \item \textbf{If you delete \texttt{sleep(1)}, the program might occasionally finish without hanging. Why is that worse than hanging every time?}
+    
+    Removing \texttt{sleep(1)} transforms a deterministic defect into a non-deterministic \textbf{Heisenbug}:
+    \begin{itemize}
+        \item When a bug manifests deterministically (hanging 100\% of the time), automated test suites immediately fail, pinpointing the defect before code enters production.
+        \item When the timing window is narrow, the code may run successfully 9,999 times out of 10,000 during local development and CI testing. The bug slips silently into production, where it triggers catastrophic system freezes under heavy real-world server workloads, making root-cause diagnostics extremely expensive and difficult.
+    \end{itemize}
+
+    \item \textbf{Fix the program: change only thread two so it takes the locks in the same order as thread one (A, then B). Run it again. Does it finish now?}
+    
+    \textbf{Yes}, the corrected program completes in 2.01 seconds and prints \texttt{done} with exit code \texttt{0}.
+    By forcing both threads to acquire Mutex A before Mutex B, Thread 2 cannot acquire any lock until Thread 1 completely releases Mutex A. The circular wait condition is mathematically broken, completely immunizing the system against deadlock.
+\end{enumerate}
+
+% ------------------ CHAPTER 6 ------------------
+\chapter{CONCLUSIONS}
+In this laboratory work, advanced multi-threaded synchronization primitives and classic concurrency patterns were systematically implemented and evaluated under Linux.
+
+The bounded-buffer model established that counting semaphores cleanly regulate multi-slot queues, while highlighting the critical necessity of ordering semaphore checks outside mutex locks to prevent deadlocks. Condition variables illustrated the mechanics of stateless thread suspension and confirmed why Mesa monitor semantics mandate predicate re-checking via \texttt{while} loops to guard against spurious wakeups.
+
+The readers-writers investigation exposed how prioritization decisions affect fairness, demonstrating that reader-favoring policies inevitably lead to writer starvation under sustained loads. Finally, deadlocks were dissected through Coffman's conditions, proving that establishing a strict global lock hierarchy is an infallible, mathematically sound strategy for eliminating circular waits in multi-threaded software.
+
+% ------------------ REFERENCES ------------------
+\chapter*{REFERENCES}
+\addcontentsline{toc}{chapter}{REFERENCES}
+
+\noindent [1] Abraham Silberschatz, Peter B. Galvin, and Greg Gagne, \textit{Operating System Concepts}, Wiley, 10th Edition, 2018.
+
+\noindent [2] Michael Kerrisk, \textit{The Linux Programming Interface: A Linux and UNIX System Programming Handbook}, No Starch Press, 2010.
+
+\noindent [3] W. Richard Stevens and Stephen A. Rago, \textit{Advanced Programming in the UNIX Environment}, Addison-Wesley, 3rd Edition, 2013.
+
+\noindent [4] Department of Software Engineering and Automation, \textit{Operating Systems Lab 12: Producer, Consumer and the Other Tools}, FCIM, Technical University of Moldova, 2026.
+
+\end{document}

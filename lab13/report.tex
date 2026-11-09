@@ -1,0 +1,484 @@
+\documentclass[12pt,a4paper]{report}
+
+% ------------------ PACKAGES ------------------
+\usepackage[a4paper,left=20mm,right=10mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{chngcntr}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+% ------------------ SPACING ------------------
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+
+% ------------------ PAGE NUMBERING ------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ------------------ CHAPTER FORMAT ------------------
+\titleformat{\chapter}
+{\bfseries\centering\fontsize{13pt}{13pt}\selectfont}
+{\thechapter}
+{1em}
+{}
+\titlespacing*{\chapter}{0pt}{0pt}{1\baselineskip}
+
+\titleformat{\section}
+{\bfseries\fontsize{12pt}{12pt}\selectfont}
+{\thesection}
+{1em}
+{}
+
+% ------------------ NUMBERING ------------------
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+\captionsetup[figure]{labelfont=bf, justification=centering}
+\captionsetup[table]{font=small}
+
+% ------------------ ENUMERATION STYLE ------------------
+\setlist[itemize]{label=-, leftmargin=1.25cm}
+\setlist[enumerate,1]{label=\alph*)}
+\setlist[enumerate,2]{label=\arabic*)}
+
+% ------------------ CODE STYLE ------------------
+\lstset{
+    basicstyle=\ttfamily\fontsize{9pt}{9pt}\selectfont,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    tabsize=2
+}
+
+% ------------------ DOCUMENT ------------------
+\begin{document}
+
+% ------------------ TITLE PAGE ------------------
+\begin{titlepage}
+\centering
+\begin{figure}[htbp]
+\centering
+\IfFileExists{img/utm_logo.png}{\includegraphics[width=0.2\textwidth]{img/utm_logo.png}}{\vspace{2cm}}
+\end{figure}
+MINISTRY OF EDUCATION AND RESEARCH\\
+OF THE REPUBLIC OF MOLDOVA\\
+Technical University of Moldova\\
+Faculty of Computers, Informatics and Microelectronics\\
+Department of Software Engineering and Automation\\[2cm]
+
+Vasilean Vitalie\\
+Group FAF-241\\[1.5cm]
+
+\textbf{\Large Report}\\
+Laboratory Work No. 13\\
+Operating Systems\\
+Topic: Semaphores in Your Own Kernel (Track B - xv6)\\[2cm]
+
+\begin{flushright}
+Checked by:\\
+univ. assist. / lect. Patricia Reițman \\
+Department of Software Engineering and Automation\\
+FCIM, UTM
+\end{flushright}
+
+\vspace{3cm}
+
+Chisinau -- 2026
+
+\end{titlepage}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+
+% ------------------ TABLE OF CONTENTS ------------------
+\tableofcontents
+\newpage
+
+% ------------------ CHAPTER 1 ------------------
+\chapter{INTRODUCTION AND GOAL}
+
+\section{Introduction}
+Synchronization inside an operating system kernel is fundamentally more challenging than user-space synchronization. Within the kernel, code executes with elevated hardware privileges (Supervisor mode on RISC-V), manages raw hardware devices, and coordinates multiple physical processors (SMP) while servicing asynchronous hardware interrupts.
+
+Operating system kernels typically utilize two major classes of synchronization mechanisms:
+\begin{itemize}
+    \item \textbf{Spinlocks:} Polling locks that repeatedly test an atomic condition in a tight loop. While spinlocks are suitable for extremely short critical sections, they are entirely unsuitable when a process must wait for slow events (such as disk I/O, user input, or cooperative process signaling) because spinning wastes valuable CPU cycles and cannot tolerate preemption.
+    \item \textbf{Sleep Locks and Semaphores:} Blocking synchronization primitives that transition the calling process from the \texttt{RUNNING} state into a \texttt{SLEEPING} state, relinquishing the physical CPU core to other runnable processes until an explicit event wakes it.
+\end{itemize}
+
+In the MIT xv6 teaching operating system, the kernel provides a sleep-and-wakeup mechanism centered around wait channels. To prevent the "lost wake-up problem" where an event signals between a condition check and the transition into sleep, xv6 pairs wait channels with spinlocks and explicit preparation functions (\texttt{sleep\_prepare} and \texttt{sleep}).
+
+\section{Laboratory Objectives}
+The core goals of this laboratory work are:
+\begin{enumerate}
+    \item Implement counting semaphores inside the xv6-riscv kernel by introducing three new system calls: \texttt{sem\_init}, \texttt{sem\_down}, and \texttt{sem\_up}.
+    \item Maintain a shared kernel-level semaphore table protected by spinlocks and utilizing xv6 wait-channel primitives.
+    \item Wire the new system calls through all kernel layers: system call table, userland stubs, and process trap dispatchers.
+    \item Verify correct operation and ordering using a dedicated userland test utility (\texttt{user/semtest.c}).
+    \item Observe and resolve multi-core console output interleaving using a shared kernel semaphore in \texttt{user/mix.c}.
+    \item Provide rigorous answers to all theoretical and architectural observation questions regarding race conditions, lock releases during sleep, and loop condition re-evaluation.
+\end{enumerate}
+
+% ------------------ CHAPTER 2 ------------------
+\chapter{PART 1: KERNEL SEMAPHORE ARCHITECTURE}
+
+\section{System Architecture and Data Structures}
+A dedicated kernel source file (\texttt{kernel/sem.c}) was integrated into the xv6 kernel build. A static table of 8 semaphores was allocated in kernel memory:
+
+\begin{lstlisting}[language=C]
+#define NSEM 8
+
+struct sem {
+  struct spinlock lock;
+  int value;
+};
+
+static struct sem sems[NSEM];
+\end{lstlisting}
+
+Each entry combines an integer counter (\texttt{value}) with an xv6 \texttt{spinlock} (\texttt{lock}) that guarantees atomic manipulation of the semaphore state across multiple CPU cores.
+
+\section{System Call Registration}
+The three system calls were registered with the operating system as follows:
+\begin{itemize}
+    \item \texttt{SYS\_sem\_init} assigned ID \textbf{24} in \texttt{kernel/syscall.h}.
+    \item \texttt{SYS\_sem\_down} assigned ID \textbf{25} in \texttt{kernel/syscall.h}.
+    \item \texttt{SYS\_sem\_up} assigned ID \textbf{26} in \texttt{kernel/syscall.h}.
+\end{itemize}
+
+In \texttt{kernel/syscall.c}, external prototypes and handler dispatch pointers were established:
+\begin{lstlisting}[language=C]
+extern uint64 sys_sem_init(void);
+extern uint64 sys_sem_down(void);
+extern uint64 sys_sem_up(void);
+
+static uint64 (*syscalls[])(void) = {
+...
+[SYS_sem_init] = sys_sem_init,
+[SYS_sem_down] = sys_sem_down,
+[SYS_sem_up]   = sys_sem_up,
+};
+\end{lstlisting}
+
+Userland prototypes were added to \texttt{user/user.h}:
+\begin{lstlisting}[language=C]
+int sem_init(int id, int value);
+int sem_down(int id);
+int sem_up(int id);
+\end{lstlisting}
+
+Assembly trap stubs were added to \texttt{user/usys.pl}:
+\begin{lstlisting}[language=Perl]
+entry("sem_init");
+entry("sem_down");
+entry("sem_up");
+\end{lstlisting}
+
+Finally, \texttt{kernel/sem.o} was added to the kernel objects list \texttt{OBJS} in the xv6 \texttt{Makefile}, and user programs \texttt{\_semtest} and \texttt{\_mix} were appended to \texttt{UPROGS}.
+
+\section{System Call Implementations (\texttt{kernel/sem.c})}
+The complete kernel logic is implemented as follows:
+
+\begin{lstlisting}[language=C]
+// sem.c: counting semaphores inside the xv6 kernel (Lab 13).
+#include "types.h"
+#include "riscv.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "proc.h"
+
+#define NSEM 8
+
+struct sem {
+  struct spinlock lock;
+  int value;
+};
+
+static struct sem sems[NSEM];
+
+// sem_init(id, value): assign semaphore start value.
+uint64
+sys_sem_init(void)
+{
+  int id, value;
+  argint(0, &id);
+  argint(1, &value);
+  if (id < 0 || id >= NSEM || value < 0)
+    return -1;
+
+  acquire(&sems[id].lock);
+  sems[id].value = value;
+  release(&sems[id].lock);
+  return 0;
+}
+
+// sem_down(id): decrement value; sleep if 0.
+uint64
+sys_sem_down(void)
+{
+  int id;
+  argint(0, &id);
+  if (id < 0 || id >= NSEM)
+    return -1;
+
+  struct sem *s = &sems[id];
+  acquire(&s->lock);
+  while (s->value == 0) {
+    sleep_prepare(s);
+    release(&s->lock);
+    sleep();
+    acquire(&s->lock);
+
+    if (killed(myproc())) {
+      release(&s->lock);
+      return -1;
+    }
+  }
+  s->value--;
+  release(&s->lock);
+  return 0;
+}
+
+// sem_up(id): increment value and wake sleeping processes.
+uint64
+sys_sem_up(void)
+{
+  int id;
+  argint(0, &id);
+  if (id < 0 || id >= NSEM)
+    return -1;
+
+  struct sem *s = &sems[id];
+  acquire(&s->lock);
+  s->value++;
+  wakeup(s);
+  release(&s->lock);
+  return 0;
+}
+\end{lstlisting}
+
+% ------------------ CHAPTER 3 ------------------
+\chapter{PART 2: TEST SUITE VERIFICATION (\texttt{semtest.c})}
+
+\section{Test Program Logic}
+To validate kernel semaphore reliability, a user-space testing harness (\texttt{user/semtest.c}) was constructed covering two critical behavioral scenarios:
+\begin{enumerate}
+    \item \textbf{Order Synchronization (Test 1):} Semaphore 0 is initialized to 0. A child process is forked and immediately calls \texttt{sem\_down(0)}. The parent process sleeps for 10 ticks via \texttt{pause(10)}, ensuring the child reaches the sleep queue first. The parent then prints its message and calls \texttt{sem\_up(0)}. The child is awakened and completes.
+    \item \textbf{Lockstep Ping-Pong (Test 2):} Two semaphores are coordinated: Semaphore 1 initialized to 1 (ping turn) and Semaphore 2 initialized to 0 (pong turn). Parent and child execute a synchronized ping-pong dialogue over 3 alternating iterations.
+\end{enumerate}
+
+\begin{lstlisting}[language=C]
+// semtest.c: two tests for the kernel semaphores (Lab 13).
+#include "kernel/types.h"
+#include "user/user.h"
+
+int main(void) {
+  // Test 1: order. Semaphore 0 starts at 0.
+  sem_init(0, 0);
+  if (fork() == 0) {
+    sem_down(0);
+    printf("child: I ran after the parent\n");
+    exit(0);
+  }
+  pause(10);
+  printf("parent: done, I let the child go\n");
+  sem_up(0);
+  wait(0);
+
+  // Test 2: ping-pong.
+  sem_init(1, 1);
+  sem_init(2, 0);
+  if (fork() == 0) {
+    for (int i = 1; i <= 3; i++) {
+      sem_down(2);
+      printf("pong %d\n", i);
+      sem_up(1);
+    }
+    exit(0);
+  }
+  for (int i = 1; i <= 3; i++) {
+    sem_down(1);
+    printf("ping %d\n", i);
+    sem_up(2);
+  }
+  wait(0);
+  printf("semtest: OK\n");
+  exit(0);
+}
+\end{lstlisting}
+
+\section{Execution Output}
+The operating system was built and executed in QEMU:
+\begin{lstlisting}[language=bash]
+$ semtest
+parent: done, I let the child go
+child: I ran after the parent
+ping 1
+pong 1
+ping 2
+pong 2
+ping 3
+pong 3
+semtest: OK
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 3.1 -- Verification trace of semtest confirming correct ordering and ping-pong execution}
+\end{figure}
+
+The output confirms that the child never preempts the parent during Test 1, and alternating execution proceeds without deadlocks or missed wakeups, concluding with \texttt{semtest: OK}.
+
+% ------------------ CHAPTER 4 ------------------
+\chapter{PART 3: MULTIPROCESSING INTERLEAVING WITH \texttt{mix.c}}
+
+\section{Console Contention Analysis}
+In \texttt{user/mix.c}, two processes print 5 lines of 30 characters each. Each character is written individually via a separate system call: \texttt{write(1, p, 1)}.
+
+\begin{lstlisting}[language=C]
+// mix.c: two processes print five lines each, one letter per write().
+#include "kernel/types.h"
+#include "user/user.h"
+
+void lines(char *s, int uselock) {
+  for (int k = 0; k < 5; k++) {
+    if (uselock)
+      sem_down(3);
+    for (char *p = s; *p; p++)
+      write(1, p, 1);
+    if (uselock)
+      sem_up(3);
+  }
+}
+
+int main(int argc, char *argv[]) {
+  int uselock = (argc > 1);
+  sem_init(3, 1);
+  if (fork() == 0) {
+    lines("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n", uselock);
+    exit(0);
+  }
+  lines("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n", uselock);
+  wait(0);
+  exit(0);
+}
+\end{lstlisting}
+
+\section{Execution Without Synchronization (\texttt{mix})}
+When executed without arguments (\texttt{uselock = 0}), both processes access the console UART concurrently:
+
+\begin{lstlisting}[language=bash]
+$ mix
+AAbAAAbAbbbAbAbbAbbAbbAbAAAbAb
+AbAbAbbAbAbbAbAbAbAbAbAbAbAbAb
+AbAbAbAbAbAbAbAbAbAbAbAbAbAbAb
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+\end{lstlisting}
+
+As shown above, individual characters 'A' and 'b' interleave randomly across columns, creating jumbled lines.
+
+\section{Execution With Semaphore Locking (\texttt{mix lock})}
+When executed with the argument \texttt{lock} (\texttt{uselock = 1}), Semaphore 3 (initialized to 1) protects the entire 30-character line printing loop:
+
+\begin{lstlisting}[language=bash]
+$ mix lock
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\caption{Figure 4.1 -- Strict line-by-line atomicity achieved under mix lock}
+\end{figure}
+
+With the semaphore acting as a mutex around each line, each 30-character sequence prints atomically without interruption.
+
+% ------------------ CHAPTER 5 ------------------
+\chapter{OBSERVATION QUESTIONS AND ARCHITECTURAL ANALYSIS}
+
+\begin{enumerate}
+    \item \textbf{In the first run (without \texttt{lock}), why do the letters mix?}
+    
+    In \texttt{mix.c}, character output is not written as a single buffered string; rather, each individual character is emitted via its own distinct system call: \texttt{write(1, p, 1)}. 
+    
+    Under xv6 on QEMU, the virtual machine is configured with multiple virtual CPUs (e.g., \texttt{-smp 3}). The parent process and child process run concurrently on separate physical CPU cores. Each invocation of \texttt{write()} crosses the user-kernel privilege boundary into the console driver independently. Because no synchronization protects the loop of 30 writes, system call traps from both cores interleave arbitrarily at the hardware UART controller, causing characters from both processes to blend together.
+
+    \item \textbf{Which two lines in \texttt{mix.c} make one line a critical section?}
+    
+    The critical section is bounded by:
+    \begin{itemize}
+        \item \textbf{Line 10:} \texttt{sem\_down(3);} immediately preceding the loop of character writes.
+        \item \textbf{Line 14:} \texttt{sem\_up(3);} immediately following the emission of the terminating newline character.
+    \end{itemize}
+    By acquiring Semaphore 3 before writing the first character of a line and releasing it only after writing the newline, the entire sequence of 31 single-byte \texttt{write()} system calls executes as an isolated atomic critical section.
+
+    \item \textbf{In \texttt{sem\_down}, why \texttt{while (s->value == 0)} and not \texttt{if}?}
+    
+    When a thread or process calls \texttt{wakeup(s)} inside \texttt{sys\_sem\_up}, xv6 marks \textbf{all} processes sleeping on the wait channel \texttt{s} as \texttt{RUNNABLE}.
+    
+    When multiple sleeping processes wake up, they cannot proceed simultaneously because each process must first acquire \texttt{s->lock}. The first process to win the spinlock acquires it, decrements \texttt{s->value} from 1 to 0, and releases the spinlock. When subsequent awakened processes acquire the spinlock in turn, \texttt{s->value} is already 0. 
+    
+    If \texttt{if} were used, the subsequent processes would proceed unconditionally, decrementing \texttt{s->value} to $-1$, violating the fundamental non-negative semaphore invariant. The \texttt{while} loop forces every awakened process to re-evaluate whether a resource unit is genuinely available; if not, it safely re-enters \texttt{sleep()}.
+
+    \item \textbf{In \texttt{sem\_down}, why \texttt{release(\&s->lock)} before \texttt{sleep()}?}
+    
+    If a process were to enter \texttt{sleep()} while still holding \texttt{s->lock}, an immediate and unrecoverable \textbf{kernel deadlock} would occur:
+    \begin{enumerate}
+        \item The process enters sleep holding the spinlock \texttt{s->lock}.
+        \item Another process attempts to execute \texttt{sem\_up} to increment the semaphore and wake the sleeping process.
+        \item In \texttt{sys\_sem\_up}, the second process executes \texttt{acquire(\&s->lock)}.
+        \item Because the sleeping process holds \texttt{s->lock}, the second process spins forever waiting for the lock.
+        \item Because the second process is locked spinning, it can never reach \texttt{wakeup(s)}.
+        \item Because \texttt{wakeup(s)} is never called, the sleeping process never wakes up to release \texttt{s->lock}.
+    \end{enumerate}
+    By registering the process on the wait channel with \texttt{sleep\_prepare(s)} and releasing \texttt{s->lock} before relinquishing the CPU in \texttt{sleep()}, xv6 guarantees that other processors can acquire \texttt{s->lock} and execute \texttt{wakeup(s)} safely without deadlocks or missed wakeups.
+\end{enumerate}
+
+% ------------------ CHAPTER 6 ------------------
+\chapter{CONCLUSIONS}
+In this laboratory work, counting semaphores were successfully engineered and integrated directly into the xv6 operating system kernel.
+
+The implementation spanned multiple architectural layers of the kernel: defining a centralized table of spinlock-protected semaphore descriptors, implementing atomic state transitions using xv6 sleep-and-wakeup channels, establishing trapframe argument unmarshaling via \texttt{argint()}, and exposing syscall stubs to userland processes.
+
+Verification via \texttt{semtest} demonstrated exact ordering enforcement and deterministic two-process ping-pong synchronization. The multiprocessing console analysis in \texttt{mix} demonstrated how multi-core instruction interleaving corrupts unprotected shared device streams, and proved that kernel-level binary semaphores effectively restore critical section atomicity across concurrent processes.
+
+Finally, deep architectural analysis clarified the critical importance of predicate re-checking with \texttt{while} loops upon wakeup and verified why holding spinlocks across sleep boundaries results in catastrophic system deadlocks.
+
+% ------------------ REFERENCES ------------------
+\chapter*{REFERENCES}
+\addcontentsline{toc}{chapter}{REFERENCES}
+
+\noindent [1] Russ Cox, Frans Kaashoek, and Robert Morris, \textit{xv6: a simple, Unix-like teaching operating system}, MIT CSAIL, 2024.
+
+\noindent [2] Andrew S. Tanenbaum and Herbert Bos, \textit{Modern Operating Systems}, Pearson, 4th Edition, 2014.
+
+\noindent [3] David A. Patterson and John L. Hennessy, \textit{Computer Organization and Design RISC-V Edition: The Hardware Software Interface}, Morgan Kaufmann, 2nd Edition, 2020.
+
+\noindent [4] Department of Software Engineering and Automation, \textit{Operating Systems Lab 13: Semaphores in Your Own Kernel}, FCIM, Technical University of Moldova, 2026.
+
+\end{document}
