@@ -1,0 +1,2 @@
+thread_switch saves the current thread callee-saved registers (ra, sp, s0..s11) into old->ctx and loads the next thread saved registers from new->ctx.
+ra makes execution continue in the other thread because ret jumps to the address stored in ra (either the thread entry function on first switch, or the return address inside thread_schedule where it previously yielded).
